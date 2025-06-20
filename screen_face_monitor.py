@@ -28,8 +28,45 @@ from datetime import datetime
 import threading 
 import csv 
  
-# 配置日志记录 
-logging.basicConfig(level=logging.INFO,  format='%(asctime)s - %(levelname)s - %(message)s')
+# 创建logs目录
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+class DailyLogManager:
+    """每日日志管理器"""
+    def __init__(self):
+        self.current_date = datetime.now().strftime('%Y%m%d')
+        self.log_filename = f"logs/face_monitor_{self.current_date}.log"
+        self.setup_logging()
+    
+    def setup_logging(self):
+        """设置日志配置"""
+        # 清除现有的处理器
+        for handler in logging.root.handlers[:]:
+            logging.root.removeHandler(handler)
+        
+        # 配置新的日志处理器
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(self.log_filename, encoding='utf-8'),
+                logging.StreamHandler()
+            ]
+        )
+    
+    def check_and_rotate(self):
+        """检查是否需要轮转日志文件"""
+        current_date = datetime.now().strftime('%Y%m%d')
+        if current_date != self.current_date:
+            logging.info(f"日期变更，从 {self.current_date} 到 {current_date}，开始新的日志文件")
+            self.current_date = current_date
+            self.log_filename = f"logs/face_monitor_{self.current_date}.log"
+            self.setup_logging()
+            logging.info(f"日志文件已切换到: {self.log_filename}")
+
+# 创建全局日志管理器
+log_manager = DailyLogManager()
  
 # 加载Dlib预训练模型 
 cnn_face_detector = dlib.cnn_face_detection_model_v1('data/data_dlib/mmod_human_face_detector.dat') 
@@ -75,6 +112,20 @@ class TransparentFaceRecognizer:
         # 识别阈值设置
         self.recognition_threshold = 0.4  # 默认识别阈值
         
+        # 根据GPU可用性自动调整设置
+        if gpu_available:
+            # GPU模式 - 高性能设置
+            self.cpu_optimization = False
+            self.process_interval = 50  # 更快的处理间隔
+            self.image_scale = 0.5  # 更高的图像质量
+            logging.info("使用GPU模式，启用高性能设置")
+        else:
+            # CPU模式 - 优化设置
+            self.cpu_optimization = True
+            self.process_interval = 100  # 较慢的处理间隔
+            self.image_scale = 0.3  # 更小的图像以节省CPU
+            logging.info("使用CPU模式，启用优化设置")
+        
         # 状态显示控制
         self.show_status_display = True  # 是否显示左上角状态信息
         
@@ -94,6 +145,19 @@ class TransparentFaceRecognizer:
         self.get_face_database() 
         self.setup_exit_controls() 
         self.create_system_tray_icon() 
+        
+        logging.info("人脸识别监控系统初始化完成")
+        logging.info(f"屏幕分辨率: {self.screen_width}x{self.screen_height}")
+        logging.info(f"GPU状态: {'可用' if gpu_available else '不可用'}")
+        if gpu_available:
+            logging.info(f"GPU设备数量: {gpu_count}")
+        logging.info(f"运行模式: {'GPU加速' if gpu_available else 'CPU优化'}")
+        logging.info(f"识别阈值: {self.recognition_threshold}")
+        logging.info(f"处理间隔: {self.process_interval}ms")
+        logging.info(f"图像缩放: {self.image_scale}")
+        logging.info(f"弹窗显示: {'开启' if self.show_popup else '关闭'}")
+        logging.info(f"自动发现新面孔: {'开启' if self.auto_add_new_faces else '关闭'}")
+        logging.info(f"状态显示: {'开启' if self.show_status_display else '关闭'}")
  
     def create_system_tray_icon(self):
         """创建系统托盘图标"""
@@ -298,8 +362,12 @@ class TransparentFaceRecognizer:
         self.frame_cnt  += 1 
         if now - self.start_time  >= 1:
             self.fps_show  = self.frame_cnt  / (now - self.start_time) 
+            # 每30秒记录一次详细性能统计
+            if int(now) % 30 == 0:
+                mode = "GPU加速" if gpu_available else "CPU优化"
+                logging.info(f"性能统计 - 模式:{mode}, FPS:{self.fps_show:.1f}, 检测到人脸:{self.current_frame_face_cnt}, 处理间隔:{self.process_interval}ms, 图像缩放:{self.image_scale}")
             self.start_time  = now 
-        self.frame_cnt  = 0 
+        self.frame_cnt  = 0
  
     def get_screen(self):
         """捕获屏幕图像"""
@@ -370,6 +438,9 @@ class TransparentFaceRecognizer:
             logging.debug(" 已有正在处理的新面孔或弹窗还在显示，跳过")
             return 
             
+        # 记录新面孔检测
+        logging.info(f"发现新面孔，准备处理 (位置: {face_rect.left()},{face_rect.top()}-{face_rect.right()},{face_rect.bottom()})")
+            
         # 记录当前新面孔 
         self.current_new_face  = {
             'img': img,
@@ -386,7 +457,7 @@ class TransparentFaceRecognizer:
         self.processed_features.add(feature_str) 
         
         # 直接处理这个新面孔 
-        self.process_new_face() 
+        self.process_new_face()
  
     def process_new_face(self):
         """处理当前新面孔"""
@@ -479,6 +550,7 @@ class TransparentFaceRecognizer:
                 self.new_face_popup_window = None
 
             def on_cancel():
+                logging.info("用户取消添加新面孔")
                 popup.destroy() 
                 # 处理完成，清理状态
                 self.is_processing_new_face  = False 
@@ -526,16 +598,23 @@ class TransparentFaceRecognizer:
  
     def process_frame(self):
         """处理每一帧图像"""
+        # 检查日志轮转
+        log_manager.check_and_rotate()
+        
         # 检查弹窗状态，确保状态一致性
         self.check_popup_status()
         
         self.canvas.delete("all") 
         img = self.get_screen() 
-        scale = 0.5 
+        scale = self.image_scale if self.cpu_optimization else 0.5
         img_small = cv2.resize(img,  (0, 0), fx=scale, fy=scale)
         
         # 人脸检测 
         faces = cnn_face_detector(img_small, 0)
+        
+        # 记录检测到的人脸数量
+        if len(faces) > 0:
+            logging.debug(f"检测到 {len(faces)} 个人脸")
         
         # 清空当前帧数据 
         self.current_frame_face_feature_list.clear() 
@@ -568,9 +647,14 @@ class TransparentFaceRecognizer:
                     name = self.face_name_known_list[idx] 
                     known = True 
                     
+                    # 记录识别结果
+                    logging.info(f"识别到已知人脸: {name} (距离: {min_dist:.3f})")
+                    
                     if name not in self.shown_faces  and self.show_popup: 
                         self.root.after(100,  lambda n=name, i=idx: self.show_face_info(n,  i))
                 else:
+                    # 记录未知人脸
+                    logging.debug(f"检测到未知人脸 (最小距离: {min_dist:.3f}, 阈值: {self.recognition_threshold})")
                     # 未知人脸，尝试添加到处理 
                     self.create_new_face_data(img,  rect, shape, feature)
             else:
@@ -586,7 +670,7 @@ class TransparentFaceRecognizer:
         # 绘制结果 
         self.draw_results() 
         self.update_fps() 
-        self.root.after(50,  self.process_frame) 
+        self.root.after(self.process_interval,  self.process_frame) 
  
     def draw_results(self):
         """在画布上绘制检测结果"""
@@ -605,8 +689,8 @@ class TransparentFaceRecognizer:
         # 只在开启状态显示时绘制状态信息
         if self.show_status_display:
             # 创建半透明背景
-            bg_width = 300
-            bg_height = 120
+            bg_width = 310
+            bg_height = 180  # 增加高度以容纳GPU信息
             self.canvas.create_rectangle(
                 10, 10, 10 + bg_width, 10 + bg_height,
                 fill='black', outline='white', width=2, stipple='gray50'
@@ -622,12 +706,25 @@ class TransparentFaceRecognizer:
                 anchor='nw'
             )
             
+            # 显示GPU状态
+            gpu_status = f"GPU: {'可用' if gpu_available else '不可用'}"
+            if gpu_available:
+                gpu_status += f" ({gpu_count}个设备)"
+            gpu_color = 'green' if gpu_available else 'red'
+            self.canvas.create_text( 
+                20, 50, 
+                text=gpu_status, 
+                fill=gpu_color, 
+                font=('Arial', 11, 'bold'), 
+                anchor='nw'
+            )
+            
             # 显示弹窗状态
             popup_status = "弹窗显示: 开启" if self.show_popup else "弹窗显示: 关闭"
             if self.is_processing_new_face or self.new_face_popup_window is not None:
                 popup_status += " | 新面孔处理中"
             self.canvas.create_text( 
-                20, 50, 
+                20, 75, 
                 text=popup_status, 
                 fill='orange', 
                 font=('Arial', 11, 'bold'), 
@@ -637,7 +734,7 @@ class TransparentFaceRecognizer:
             # 显示自动发现新面孔状态
             auto_add_status = "自动发现新面孔: 开启" if self.auto_add_new_faces else "自动发现新面孔: 关闭"
             self.canvas.create_text( 
-                20, 75, 
+                20, 100, 
                 text=auto_add_status, 
                 fill='cyan', 
                 font=('Arial', 11, 'bold'), 
@@ -647,10 +744,20 @@ class TransparentFaceRecognizer:
             # 显示当前识别阈值
             threshold_status = f"识别阈值: {self.recognition_threshold:.2f}"
             self.canvas.create_text( 
-                20, 100, 
+                20, 125, 
                 text=threshold_status, 
                 fill='magenta', 
                 font=('Arial', 11, 'bold'), 
+                anchor='nw'
+            )
+            
+            # 显示运行模式
+            mode_status = f"运行模式: {'GPU加速' if gpu_available else 'CPU优化'} (间隔:{self.process_interval}ms)"
+            self.canvas.create_text( 
+                20, 150, 
+                text=mode_status, 
+                fill='yellow', 
+                font=('Arial', 10, 'bold'), 
                 anchor='nw'
             )
  
@@ -778,10 +885,42 @@ class TransparentFaceRecognizer:
             print(f"重新生成CSV文件时出错: {str(e)}")
             return False
 
+def detect_gpu_availability():
+    """检测GPU可用性"""
+    try:
+        # 检查dlib是否支持CUDA
+        if hasattr(dlib, 'DLIB_USE_CUDA') and dlib.DLIB_USE_CUDA:
+            # 检查CUDA设备数量
+            if hasattr(dlib, 'cuda') and hasattr(dlib.cuda, 'get_num_devices'):
+                num_devices = dlib.cuda.get_num_devices()
+                if num_devices > 0:
+                    logging.info(f"检测到 {num_devices} 个CUDA设备，启用GPU加速")
+                    return True, num_devices
+                else:
+                    logging.warning("dlib支持CUDA但未检测到可用的GPU设备")
+                    return False, 0
+            else:
+                logging.warning("dlib支持CUDA但无法获取设备信息")
+                return False, 0
+        else:
+            logging.info("dlib未编译CUDA支持，使用CPU模式")
+            return False, 0
+    except Exception as e:
+        logging.error(f"GPU检测过程中出错: {e}")
+        return False, 0
+
+# 检测GPU可用性
+gpu_available, gpu_count = detect_gpu_availability()
+
 def main():
     try:
+        logging.info("=" * 50)
+        logging.info("人脸识别监控系统启动")
+        logging.info("=" * 50)
+        
         # 启动时重做CSV文件
         print("正在重新生成人脸特征文件...")
+        logging.info("开始重新生成人脸特征文件...")
         
         # 创建主实例
         recognizer = TransparentFaceRecognizer()
@@ -789,14 +928,22 @@ def main():
         # 重新生成CSV文件
         if recognizer.regenerate_csv_from_images():
             print("人脸特征文件重新生成成功！")
+            logging.info("人脸特征文件重新生成成功")
         else:
             print("人脸特征文件重新生成失败，继续使用现有特征文件...")
+            logging.warning("人脸特征文件重新生成失败，继续使用现有特征文件")
         
         print("启动人脸识别监控系统...")
+        logging.info("开始运行人脸识别监控系统")
         recognizer.run() 
     except Exception as e:
         logging.error(f" 程序运行出错: {str(e)}")
+        logging.error("程序异常退出")
         raise
+    finally:
+        logging.info("=" * 50)
+        logging.info("人脸识别监控系统退出")
+        logging.info("=" * 50)
  
 if __name__ == '__main__':
     main()
