@@ -20,6 +20,7 @@ import pyautogui
 import mss 
 import ctypes 
 import tkinter as tk 
+from tkinter import ttk
 import pystray 
 from tkinter import Canvas, Toplevel, Label, simpledialog 
 import random 
@@ -329,9 +330,8 @@ class TransparentFaceRecognizer:
                     # 等待进程完成
                     process.wait()
                     
-                    # 进程完成后，重新加载人脸数据库
-                    logging.info("人脸采集工具已关闭，重新加载人脸数据库")
-                    self.reload_face_database()
+                    # 进程完成后，显示进度条并重新加载人脸数据库
+                    self.show_loading_progress("正在更新人脸库...", self.reload_face_database)
                     
                 else:
                     logging.error(f"找不到人脸采集工具脚本: {face_collector_script}")
@@ -346,6 +346,55 @@ class TransparentFaceRecognizer:
         
         # 在新线程中运行，避免阻塞主程序
         threading.Thread(target=run_face_collector, daemon=True).start()
+ 
+    def show_loading_progress(self, message, task_function):
+        """显示加载进度条"""
+        def show_progress():
+            # 创建进度条窗口
+            progress_window = tk.Toplevel(self.root)
+            progress_window.title("处理中")
+            progress_window.geometry("400x150")
+            progress_window.attributes("-topmost", True)
+            progress_window.grab_set()
+            
+            # 居中显示
+            progress_window.update_idletasks()
+            x = (progress_window.winfo_screenwidth() // 2) - (400 // 2)
+            y = (progress_window.winfo_screenheight() // 2) - (180 // 2)
+            progress_window.geometry(f"400x180+{x}+{y}")
+            
+            # 消息标签
+            message_label = tk.Label(progress_window, text=message, font=('Arial', 12))
+            message_label.pack(pady=20)
+            
+            # 进度条
+            progress_bar = tk.ttk.Progressbar(progress_window, mode='indeterminate', length=300)
+            progress_bar.pack(pady=10)
+            progress_bar.start()
+            
+            # 状态标签
+            status_label = tk.Label(progress_window, text="请稍候...", font=('Arial', 10))
+            status_label.pack(pady=10)
+            
+            def update_status(text):
+                status_label.config(text=text)
+                progress_window.update()
+            
+            def run_task():
+                try:
+                    update_status("正在重新加载人脸数据库...")
+                    task_function()
+                    update_status("更新完成！")
+                    progress_window.after(1000, progress_window.destroy)  # 1秒后关闭
+                except Exception as e:
+                    update_status(f"更新失败: {str(e)}")
+                    progress_window.after(2000, progress_window.destroy)  # 2秒后关闭
+            
+            # 在新线程中运行任务
+            threading.Thread(target=run_task, daemon=True).start()
+        
+        # 在主线程中显示进度条
+        self.root.after(0, show_progress)
  
     def reload_face_database(self):
         """重新加载人脸数据库"""
@@ -986,20 +1035,15 @@ def main():
         logging.info("人脸识别监控系统启动")
         logging.info("=" * 50)
         
-        # 启动时重做CSV文件
-        print("正在重新生成人脸特征文件...")
-        logging.info("开始重新生成人脸特征文件...")
-        
         # 创建主实例
         recognizer = TransparentFaceRecognizer()
         
-        # 重新生成CSV文件
-        if recognizer.regenerate_csv_from_images():
-            print("人脸特征文件重新生成成功！")
-            logging.info("人脸特征文件重新生成成功")
-        else:
-            print("人脸特征文件重新生成失败，继续使用现有特征文件...")
-            logging.warning("人脸特征文件重新生成失败，继续使用现有特征文件")
+        # 启动时重做CSV文件，显示进度条
+        print("正在重新生成人脸特征文件...")
+        logging.info("开始重新生成人脸特征文件...")
+        
+        # 显示启动进度条
+        recognizer.show_loading_progress("正在初始化人脸库...", lambda: recognizer.regenerate_csv_from_images())
         
         print("启动人脸识别监控系统...")
         logging.info("开始运行人脸识别监控系统")
