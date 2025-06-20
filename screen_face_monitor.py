@@ -221,6 +221,7 @@ class TransparentFaceRecognizer:
             self.threshold_item,
             self.toggle_status_item,
             pystray.MenuItem('手动添加人脸', self.manual_add_face),
+            pystray.MenuItem('打开人脸数据文件夹', self.open_faces_folder),
             pystray.MenuItem('退出', self.quit_program) 
         )
         
@@ -346,6 +347,22 @@ class TransparentFaceRecognizer:
         
         # 在新线程中运行，避免阻塞主程序
         threading.Thread(target=run_face_collector, daemon=True).start()
+ 
+    def open_faces_folder(self, icon=None, item=None):
+        """打开存放人脸图像的文件夹"""
+        folder_path = "data/data_faces_from_camera"
+        try:
+            abs_path = os.path.abspath(folder_path)
+            if not os.path.exists(abs_path):
+                os.makedirs(abs_path)
+                logging.info(f"文件夹不存在，已创建: {abs_path}")
+            
+            os.startfile(abs_path)
+            logging.info(f"已请求打开文件夹: {abs_path}")
+        except Exception as e:
+            logging.error(f"无法打开文件夹 {folder_path}: {e}")
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("错误", f"无法打开文件夹:\n{os.path.abspath(folder_path)}\n\n错误: {e}")
  
     def show_loading_progress(self, message, task_function):
         """显示加载进度条（直接在主窗口上显示）"""
