@@ -526,7 +526,16 @@ class TransparentFaceRecognizer:
                         feature_str = ','.join(map(str, features))
                         self.face_name_known_list.append(name)  
                         self.face_feature_known_list.append(features)  
-                        self.face_image_path_list.append(f"data/data_faces_from_camera/person_{name}/img_face_1.jpg")  
+                        
+                        # 构建图像路径 - 支持新旧格式
+                        if '_' in name and name.count('_') >= 1:
+                            # 新格式: 姓名_身份证号
+                            folder_name = f"person_{name}"
+                        else:
+                            # 旧格式: 数字编号
+                            folder_name = f"person_{name}"
+                        
+                        self.face_image_path_list.append(f"data/data_faces_from_camera/{folder_name}/img_face_1.jpg")  
                         self.processed_features.add(feature_str)  
                     logging.info(f" 已加载 {len(self.face_feature_known_list)}  张人脸")
                 else:
@@ -576,17 +585,30 @@ class TransparentFaceRecognizer:
             
             if os.path.exists(img_path): 
                 try:
-                    img = Image.open(img_path).resize((200,  200))
-                    img = ImageTk.PhotoImage(img)
-                    label_img = Label(popup, image=img)
-                    label_img.image  = img 
+                    # 使用imdecode读取图像，避免中文路径问题
+                    img_path_abs = os.path.abspath(img_path)
+                    img_array = np.fromfile(img_path_abs, dtype=np.uint8)
+                    pil_img = Image.open(img_path).resize((200,  200))
+                    tk_img = ImageTk.PhotoImage(pil_img)
+                    label_img = Label(popup, image=tk_img)
+                    label_img.image  = tk_img 
                     label_img.pack(pady=10) 
                 except Exception as e:
-                    Label(popup, text="图片加载失败").pack(pady=10)
+                    Label(popup, text=f"图片加载失败: {str(e)}").pack(pady=10)
             else:
                 Label(popup, text="无图片").pack(pady=10)
+            
+            # 解析姓名和身份证号
+            if '_' in name and name.count('_') >= 1:
+                # 新格式: 姓名_身份证号
+                name_parts = name.split('_', 1)
+                display_name = name_parts[0]
+                id_number = name_parts[1]
+                info = f"姓名: {display_name}\n身份证号: {id_number}\n识别时间: {time.strftime('%Y-%m-%d  %H:%M:%S')}"
+            else:
+                # 旧格式或其他格式
+                info = f"姓名: {name}\n识别时间: {time.strftime('%Y-%m-%d  %H:%M:%S')}"
                 
-            info = f"姓名: {name}\n识别时间: {time.strftime('%Y-%m-%d  %H:%M:%S')}"
             Label(popup, text=info, font=('Arial', 12)).pack(pady=10)
             
             def close():
@@ -656,7 +678,7 @@ class TransparentFaceRecognizer:
         def ask_name_with_preview():
             popup = Toplevel(self.root) 
             popup.title("发现新的人脸")
-            popup.geometry("400x600") 
+            popup.geometry("500x700") 
             popup.attributes("-topmost",  True)
             popup.grab_set() 
             popup.resizable(False, False)  # 禁止调整大小
@@ -693,21 +715,55 @@ class TransparentFaceRecognizer:
                 error_label.pack(pady=(0, 20))
 
             # 输入提示
-            prompt_label = Label(main_frame, text="请输入此人姓名：", font=('Arial', 12))
+            prompt_label = Label(main_frame, text="请输入此人信息：", font=('Arial', 12, 'bold'))
             prompt_label.pack(pady=(0, 10))
             
-            # 输入框
-            name_entry = tk.Entry(main_frame, font=('Arial', 12), width=25)
-            name_entry.pack(pady=(0, 20)) 
-            name_entry.focus_set() 
+            # 姓名输入框
+            name_frame = tk.Frame(main_frame)
+            name_frame.pack(fill=tk.X, pady=(0, 10))
+            name_label = Label(name_frame, text="姓名:", font=('Arial', 11), width=8, anchor='w')
+            name_label.pack(side=tk.LEFT)
+            name_entry = tk.Entry(name_frame, font=('Arial', 11), width=20)
+            name_entry.pack(side=tk.LEFT, padx=(5, 0))
+            name_entry.focus_set()
+            
+            # 身份证号输入框
+            id_frame = tk.Frame(main_frame)
+            id_frame.pack(fill=tk.X, pady=(0, 20))
+            id_label = Label(id_frame, text="身份证号:", font=('Arial', 11), width=8, anchor='w')
+            id_label.pack(side=tk.LEFT)
+            id_entry = tk.Entry(id_frame, font=('Arial', 11), width=20)
+            id_entry.pack(side=tk.LEFT, padx=(5, 0))
 
             # 按钮框架
             button_frame = tk.Frame(main_frame)
             button_frame.pack(pady=(0, 10))
  
             def on_confirm():
-                name = name_entry.get().strip()  or "Unknown_" + ''.join(random.choices(string.ascii_letters  + string.digits,  k=4))
-                folder = f"data/data_faces_from_camera/person_{name}"
+                name = name_entry.get().strip()
+                id_number = id_entry.get().strip()
+                
+                # 验证输入
+                if not name:
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", "请输入姓名")
+                    return
+                
+                if not id_number:
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", "请输入身份证号")
+                    return
+                
+                # 验证身份证号格式（简单验证）
+                if len(id_number) != 18:
+                    import tkinter.messagebox as messagebox
+                    result = messagebox.askyesno("警告", "身份证号长度不是18位，是否继续？")
+                    if not result:
+                        return
+                
+                # 创建文件夹名称：姓名_身份证号
+                folder_name = f"person_{name}_{id_number}"
+                folder = f"data/data_faces_from_camera/{folder_name}"
                 os.makedirs(folder,  exist_ok=True)
                 
                 # 查找可用的文件名 
@@ -716,17 +772,33 @@ class TransparentFaceRecognizer:
                     img_index += 1 
                     
                 img_filename = os.path.join(folder,  f"img_face_{img_index}.jpg")
-                cv2.imwrite(img_filename,  cv2.cvtColor(face_img,  cv2.COLOR_RGB2BGR))
+                
+                # 保存图像 - 使用imencode避免中文路径问题
+                try:
+                    # 转换颜色空间
+                    face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
+                    # 使用imencode保存图像
+                    success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
+                    if success:
+                        with open(img_filename, 'wb') as f:
+                            f.write(encoded_img.tobytes())
+                    else:
+                        raise Exception("图像编码失败")
+                except Exception as e:
+                    logging.error(f"保存图像失败: {str(e)}")
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", f"保存图像失败: {str(e)}")
+                    return
                 
                 # 更新内存中的数据库 
-                self.face_name_known_list.append(name) 
+                self.face_name_known_list.append(f"{name}_{id_number}") 
                 self.face_feature_known_list.append(face_data['feature']) 
                 self.face_image_path_list.append(img_filename) 
                 
                 # 更新CSV文件 
-                self.update_face_database_csv(name,  face_data['feature'])
+                self.update_face_database_csv(f"{name}_{id_number}",  face_data['feature'])
                 
-                logging.info(f" 新增人脸: {name}，图像保存为 {img_filename}")
+                logging.info(f" 新增人脸: {name}_{id_number}，图像保存为 {img_filename}")
                 popup.destroy() 
                 
                 # 处理完成，清理状态
@@ -868,9 +940,17 @@ class TransparentFaceRecognizer:
         for i, (left, top, right, bottom) in enumerate(self.current_frame_face_position_list): 
             color = 'red' if self.current_frame_face_known_list[i]  else 'cyan'
             self.canvas.create_rectangle(left,  top, right, bottom, outline=color, width=2)
+            
+            # 解析显示名称
+            display_name = self.current_frame_face_name_list[i]
+            if '_' in display_name and display_name.count('_') >= 1:
+                # 新格式: 姓名_身份证号，只显示姓名
+                name_parts = display_name.split('_', 1)
+                display_name = name_parts[0]
+            
             self.canvas.create_text( 
                 left, bottom + 20, 
-                text=self.current_frame_face_name_list[i], 
+                text=display_name, 
                 fill='yellow', 
                 font=('Arial', 12, 'bold'), 
                 anchor='nw'
@@ -982,11 +1062,32 @@ class TransparentFaceRecognizer:
                 writer = csv.writer(csvfile)
                 
                 for person_folder in person_folders:
-                    person_name = person_folder.split('_', 1)[1] if '_' in person_folder else person_folder
+                    # 解析文件夹名称
+                    # 格式1: person_姓名_身份证号
+                    # 格式2: person_数字编号 (兼容旧格式)
+                    folder_parts = person_folder.split('_', 2)  # 最多分割2次
+                    
+                    if len(folder_parts) >= 3:
+                        # 新格式: person_姓名_身份证号
+                        person_name = f"{folder_parts[1]}_{folder_parts[2]}"
+                        display_name = f"{folder_parts[1]}_{folder_parts[2]}"
+                    elif len(folder_parts) == 2:
+                        # 旧格式: person_数字编号
+                        person_name = folder_parts[1]
+                        display_name = f"未知_{folder_parts[1]}"
+                    else:
+                        # 异常格式，跳过
+                        print(f"警告: 跳过异常格式的文件夹 {person_folder}")
+                        continue
+                    
                     folder_path = os.path.join(data_faces_path, person_folder)
                     
                     # 获取该人员的所有图像
-                    image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                    try:
+                        image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                    except Exception as e:
+                        print(f"警告: 无法读取文件夹 {person_folder}: {str(e)}")
+                        continue
                     
                     if not image_files:
                         print(f"警告: {person_folder} 文件夹中没有找到图像文件")
@@ -997,8 +1098,9 @@ class TransparentFaceRecognizer:
                     for img_file in image_files:
                         img_path = os.path.join(folder_path, img_file)
                         try:
-                            # 读取图像
-                            img = cv2.imread(img_path)
+                            # 读取图像 - 使用绝对路径避免编码问题
+                            img_path_abs = os.path.abspath(img_path)
+                            img = cv2.imdecode(np.fromfile(img_path_abs, dtype=np.uint8), cv2.IMREAD_COLOR)
                             if img is None:
                                 print(f"警告: 无法读取图像 {img_path}")
                                 continue
@@ -1064,9 +1166,9 @@ class TransparentFaceRecognizer:
                         feature_str = ','.join(map(str, avg_feature))
                         self.processed_features.add(feature_str)
                         
-                        print(f"已处理 {person_name}: {len(features_list)} 张图像")
+                        print(f"已处理 {display_name}: {len(features_list)} 张图像")
                     else:
-                        print(f"警告: {person_name} 没有成功提取到特征")
+                        print(f"警告: {display_name} 没有成功提取到特征")
             
             print(f"CSV文件重新生成完成，共处理 {len(self.face_name_known_list)} 个人")
             return True

@@ -124,6 +124,18 @@ class FaceCollector:
                                   relief=tk.SOLID, bd=1)
         self.entry_name.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=(0, 8))
         
+        # 身份证号输入区域
+        id_frame = tk.Frame(self.frame_right, bg='white')
+        id_frame.pack(pady=8, padx=20, fill=tk.X)
+        
+        tk.Label(id_frame, text="身份证号:", 
+                font=('Microsoft YaHei UI', 11, 'bold'), 
+                fg='#2c3e50', bg='white').pack(anchor=tk.W, pady=(0, 5))
+        
+        self.entry_id = tk.Entry(id_frame, font=('Microsoft YaHei UI', 11),
+                                relief=tk.SOLID, bd=1)
+        self.entry_id.pack(fill=tk.X, pady=(0, 8))
+        
         # 创建自动完成下拉列表
         self.autocomplete_listbox = tk.Listbox(name_frame, 
                                               font=('Microsoft YaHei UI', 10),
@@ -157,7 +169,7 @@ class FaceCollector:
         self.btn_save.pack(pady=8, padx=20, fill=tk.X)
         
         # 批量保存按钮
-        self.btn_batch_save = tk.Button(self.frame_right, text="📝 批量保存不同姓名", 
+        self.btn_batch_save = tk.Button(self.frame_right, text="📝 批量保存不同人员", 
                                        command=self.save_multiple_faces_with_names,
                                        font=('Microsoft YaHei UI', 11),
                                        bg='#9b59b6', fg='white',
@@ -170,7 +182,7 @@ class FaceCollector:
         separator.pack(fill=tk.X, padx=20, pady=12)
         
         # 已注册人名区域
-        names_title = tk.Label(self.frame_right, text="已注册的人名", 
+        names_title = tk.Label(self.frame_right, text="已注册的人员信息", 
                               font=('Microsoft YaHei UI', 12, 'bold'), 
                               fg='#2c3e50', bg='white')
         names_title.pack(pady=(0, 8))
@@ -196,7 +208,7 @@ class FaceCollector:
         scrollbar.config(command=self.listbox_names.yview)
         
         # 删除按钮
-        self.btn_delete = tk.Button(self.frame_right, text="🗑️ 删除选中的人名", 
+        self.btn_delete = tk.Button(self.frame_right, text="🗑️ 删除选中的人员信息", 
                                    command=self.delete_selected_name,
                                    font=('Microsoft YaHei UI', 11),
                                    bg='#e74c3c', fg='white',
@@ -239,8 +251,16 @@ class FaceCollector:
     def load_registered_names(self):
         """加载已注册的人名"""
         if os.path.exists(self.path_photos_from_camera):
-            self.registered_names = [d.split('_')[1] for d in os.listdir(self.path_photos_from_camera) 
-                                  if os.path.isdir(os.path.join(self.path_photos_from_camera, d))]
+            self.registered_names = []
+            for d in os.listdir(self.path_photos_from_camera):
+                dir_path = os.path.join(self.path_photos_from_camera, d)
+                if os.path.isdir(dir_path) and d.startswith('person_'):
+                    # 解析文件夹名：person_姓名_身份证号
+                    parts = d.split('_', 2)  # 最多分割2次，保留身份证号中的下划线
+                    if len(parts) >= 3:
+                        name = parts[1]
+                        id_number = parts[2]
+                        self.registered_names.append(f"{name}_{id_number}")
             self.update_name_list()
     
     def update_name_list(self):
@@ -253,8 +273,18 @@ class FaceCollector:
         if self.autocomplete_visible:
             current_text = self.entry_name.get().strip()
             if current_text:
-                self.filtered_names = [name for name in self.registered_names 
-                                      if name.lower().startswith(current_text.lower())]
+                # 过滤匹配的人名（从"姓名_身份证号"格式中提取姓名进行匹配）
+                self.filtered_names = []
+                for registered_name in self.registered_names:
+                    if '_' in registered_name:
+                        name_part = registered_name.split('_')[0]  # 提取姓名部分
+                        if name_part.lower().startswith(current_text.lower()):
+                            self.filtered_names.append(registered_name)
+                    else:
+                        # 兼容旧格式
+                        if registered_name.lower().startswith(current_text.lower()):
+                            self.filtered_names.append(registered_name)
+                
                 if self.filtered_names:
                     self.show_autocomplete()
                 else:
@@ -272,9 +302,17 @@ class FaceCollector:
             self.hide_autocomplete()
             return
         
-        # 过滤匹配的人名
-        self.filtered_names = [name for name in self.registered_names 
-                              if name.lower().startswith(current_text.lower())]
+        # 过滤匹配的人名（从"姓名_身份证号"格式中提取姓名进行匹配）
+        self.filtered_names = []
+        for registered_name in self.registered_names:
+            if '_' in registered_name:
+                name_part = registered_name.split('_')[0]  # 提取姓名部分
+                if name_part.lower().startswith(current_text.lower()):
+                    self.filtered_names.append(registered_name)
+            else:
+                # 兼容旧格式
+                if registered_name.lower().startswith(current_text.lower()):
+                    self.filtered_names.append(registered_name)
         
         if self.filtered_names:
             self.show_autocomplete()
@@ -362,11 +400,30 @@ class FaceCollector:
         selection = self.autocomplete_listbox.curselection()
         if selection:
             selected_name = self.autocomplete_listbox.get(selection[0])
-            self.entry_name.delete(0, tk.END)
-            self.entry_name.insert(0, selected_name)
+            
+            # 解析"姓名_身份证号"格式
+            if '_' in selected_name:
+                parts = selected_name.split('_', 1)  # 最多分割1次，保留身份证号中的下划线
+                if len(parts) >= 2:
+                    name = parts[0]
+                    id_number = parts[1]
+                    # 填充姓名和身份证号
+                    self.entry_name.delete(0, tk.END)
+                    self.entry_name.insert(0, name)
+                    self.entry_id.delete(0, tk.END)
+                    self.entry_id.insert(0, id_number)
+                else:
+                    # 如果格式不正确，只填充姓名
+                    self.entry_name.delete(0, tk.END)
+                    self.entry_name.insert(0, selected_name)
+            else:
+                # 兼容旧格式，只填充姓名
+                self.entry_name.delete(0, tk.END)
+                self.entry_name.insert(0, selected_name)
+            
             self.hide_autocomplete()
-            # 将焦点设置到输入框
-            self.entry_name.focus_set()
+            # 将焦点设置到身份证号输入框
+            self.entry_id.focus_set()
     
     def decode_path(self, file_path):
         """处理中文路径编码问题"""
@@ -658,7 +715,15 @@ class FaceCollector:
             messagebox.showwarning("警告", "请输入姓名")
             return
         
-        self.update_status(f"正在保存 {name} 的人脸数据...")
+        id_number = self.entry_id.get().strip()
+        if not id_number:
+            messagebox.showwarning("警告", "请输入身份证号")
+            return
+        
+        # 组合姓名和身份证号
+        person_id = f"{name}_{id_number}"
+        
+        self.update_status(f"正在保存 {person_id} 的人脸数据...")
         
         # 确定要保存的人脸：优先保存选中的，如果没有选中则保存所有人脸
         if self.selected_faces:
@@ -667,7 +732,7 @@ class FaceCollector:
             faces_to_save = self.current_faces
         
         # 创建保存目录
-        save_dir = os.path.join(self.path_photos_from_camera, f"person_{name}")
+        save_dir = os.path.join(self.path_photos_from_camera, f"person_{person_id}")
         try:
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
@@ -734,8 +799,8 @@ class FaceCollector:
             self.update_status(f"已保存 {saved_count} 张人脸图片")
             messagebox.showinfo("成功", f"已保存 {saved_count} 张人脸图片")
             # 更新已注册人名列表
-            if name not in self.registered_names:
-                self.registered_names.append(name)
+            if person_id not in self.registered_names:
+                self.registered_names.append(person_id)
                 self.update_name_list()
         else:
             self.update_status("保存失败")
@@ -754,42 +819,60 @@ class FaceCollector:
         # 创建批量保存对话框
         dialog = tk.Toplevel(self.win)
         dialog.title("批量保存人脸")
-        dialog.geometry("400x500")
+        dialog.geometry("500x600")
         dialog.configure(bg='#f0f0f0')
         dialog.transient(self.win)
         dialog.grab_set()
         
         # 对话框标题
-        title_label = tk.Label(dialog, text="为每个人脸指定姓名", 
+        title_label = tk.Label(dialog, text="为每个人脸指定姓名和身份证号", 
                               font=('Microsoft YaHei UI', 14, 'bold'), 
                               fg='#2c3e50', bg='#f0f0f0')
         title_label.pack(pady=10)
         
         # 创建输入框和自动完成列表
         name_entries = []
+        id_entries = []
         autocomplete_listboxes = []
         
         for i, face_idx in enumerate(self.selected_faces):
             # 为每个人脸创建一个框架
             face_frame = tk.Frame(dialog, bg='#f0f0f0')
-            face_frame.pack(pady=5, padx=20, fill=tk.X)
+            face_frame.pack(pady=8, padx=20, fill=tk.X)
             
             # 标签
             tk.Label(face_frame, text=f"人脸 {face_idx+1}:", 
-                    font=('Microsoft YaHei UI', 10), 
-                    fg='#2c3e50', bg='#f0f0f0').pack(side=tk.LEFT)
+                    font=('Microsoft YaHei UI', 10, 'bold'), 
+                    fg='#2c3e50', bg='#f0f0f0').pack(anchor=tk.W, pady=(0, 5))
             
-            # 输入框框架
-            entry_frame = tk.Frame(face_frame, bg='#f0f0f0')
-            entry_frame.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
+            # 姓名输入框架
+            name_input_frame = tk.Frame(face_frame, bg='#f0f0f0')
+            name_input_frame.pack(fill=tk.X, pady=2)
             
-            # 输入框
-            entry = tk.Entry(entry_frame, font=('Microsoft YaHei UI', 10))
-            entry.pack(fill=tk.X)
-            name_entries.append(entry)
+            tk.Label(name_input_frame, text="姓名:", 
+                    font=('Microsoft YaHei UI', 9), 
+                    fg='#2c3e50', bg='#f0f0f0', width=8).pack(side=tk.LEFT)
+            
+            # 姓名输入框
+            name_entry = tk.Entry(name_input_frame, font=('Microsoft YaHei UI', 9))
+            name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+            name_entries.append(name_entry)
+            
+            # 身份证号输入框架
+            id_input_frame = tk.Frame(face_frame, bg='#f0f0f0')
+            id_input_frame.pack(fill=tk.X, pady=2)
+            
+            tk.Label(id_input_frame, text="身份证号:", 
+                    font=('Microsoft YaHei UI', 9), 
+                    fg='#2c3e50', bg='#f0f0f0', width=8).pack(side=tk.LEFT)
+            
+            # 身份证号输入框
+            id_entry = tk.Entry(id_input_frame, font=('Microsoft YaHei UI', 9))
+            id_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+            id_entries.append(id_entry)
             
             # 自动完成下拉列表
-            autocomplete_listbox = tk.Listbox(entry_frame, 
+            autocomplete_listbox = tk.Listbox(name_input_frame, 
                                             font=('Microsoft YaHei UI', 9),
                                             relief=tk.SOLID, bd=1,
                                             bg='white', fg='#2c3e50',
@@ -799,10 +882,10 @@ class FaceCollector:
             autocomplete_listboxes.append(autocomplete_listbox)
             
             # 绑定输入事件
-            entry.bind('<KeyRelease>', lambda e, idx=i: self.on_batch_name_input(e, idx, name_entries, autocomplete_listboxes))
-            entry.bind('<KeyPress>', lambda e, idx=i: self.on_batch_name_keypress(e, idx, autocomplete_listboxes))
-            entry.bind('<FocusOut>', lambda e, idx=i: self.hide_batch_autocomplete(idx, autocomplete_listboxes))
-            entry.bind('<FocusIn>', lambda e, idx=i: self.on_batch_name_focus(e, idx, name_entries, autocomplete_listboxes))
+            name_entry.bind('<KeyRelease>', lambda e, idx=i: self.on_batch_name_input(e, idx, name_entries, autocomplete_listboxes))
+            name_entry.bind('<KeyPress>', lambda e, idx=i: self.on_batch_name_keypress(e, idx, autocomplete_listboxes))
+            name_entry.bind('<FocusOut>', lambda e, idx=i: self.hide_batch_autocomplete(idx, autocomplete_listboxes))
+            name_entry.bind('<FocusIn>', lambda e, idx=i: self.on_batch_name_focus(e, idx, name_entries, autocomplete_listboxes))
             
             # 绑定下拉列表事件
             autocomplete_listbox.bind('<Double-Button-1>', lambda e, idx=i: self.select_batch_autocomplete(e, idx, name_entries, autocomplete_listboxes))
@@ -811,12 +894,18 @@ class FaceCollector:
         # 保存按钮
         def save_batch():
             names = [entry.get().strip() for entry in name_entries]
+            id_numbers = [entry.get().strip() for entry in id_entries]
+            
             if not all(names):
                 messagebox.showwarning("警告", "请为所有人脸输入姓名")
                 return
             
+            if not all(id_numbers):
+                messagebox.showwarning("警告", "请为所有人脸输入身份证号")
+                return
+            
             dialog.destroy()
-            self.batch_save_faces(names)
+            self.batch_save_faces(names, id_numbers)
         
         save_btn = tk.Button(dialog, text="保存", command=save_batch,
                             font=('Microsoft YaHei UI', 12),
@@ -826,19 +915,23 @@ class FaceCollector:
         
         # 存储对话框引用以便后续使用
         dialog.name_entries = name_entries
+        dialog.id_entries = id_entries
         dialog.autocomplete_listboxes = autocomplete_listboxes
     
-    def batch_save_faces(self, names):
+    def batch_save_faces(self, names, id_numbers):
         """批量保存不同姓名的人脸"""
         self.update_status("正在批量保存人脸...")
         
         saved_count = 0
-        for i, (face_idx, name) in enumerate(zip(self.selected_faces, names)):
-            if not name:
+        for i, (face_idx, name, id_number) in enumerate(zip(self.selected_faces, names, id_numbers)):
+            if not name or not id_number:
                 continue
             
+            # 组合姓名和身份证号
+            person_id = f"{name}_{id_number}"
+            
             # 创建保存目录
-            save_dir = os.path.join(self.path_photos_from_camera, f"person_{name}")
+            save_dir = os.path.join(self.path_photos_from_camera, f"person_{person_id}")
             try:
                 if not os.path.exists(save_dir):
                     os.makedirs(save_dir)
@@ -864,22 +957,22 @@ class FaceCollector:
                 
                 if success:
                     saved_count += 1
-                    print(f"成功保存 {name} 的人脸: {save_path}")
+                    print(f"成功保存 {person_id} 的人脸: {save_path}")
                 else:
                     # 尝试PIL保存
                     try:
                         Image.fromarray(face_image).save(save_path, 'JPEG', quality=95)
                         saved_count += 1
-                        print(f"使用PIL成功保存 {name} 的人脸: {save_path}")
+                        print(f"使用PIL成功保存 {person_id} 的人脸: {save_path}")
                     except:
-                        print(f"保存 {name} 的人脸失败")
+                        print(f"保存 {person_id} 的人脸失败")
                 
                 # 更新已注册人名列表
-                if name not in self.registered_names:
-                    self.registered_names.append(name)
+                if person_id not in self.registered_names:
+                    self.registered_names.append(person_id)
                 
             except Exception as e:
-                print(f"保存 {name} 的人脸时出错: {str(e)}")
+                print(f"保存 {person_id} 的人脸时出错: {str(e)}")
                 continue
         
         if saved_count > 0:
@@ -897,21 +990,21 @@ class FaceCollector:
             messagebox.showwarning("警告", "请先选择要删除的人名")
             return
         
-        name = self.listbox_names.get(selection[0])
-        if messagebox.askyesno("确认", f"确定要删除 {name} 的所有人脸数据吗？"):
-            self.update_status(f"正在删除 {name} 的数据...")
+        person_id = self.listbox_names.get(selection[0])
+        if messagebox.askyesno("确认", f"确定要删除 {person_id} 的所有人脸数据吗？"):
+            self.update_status(f"正在删除 {person_id} 的数据...")
             
             # 删除文件夹
-            folder_path = os.path.join(self.path_photos_from_camera, f"person_{name}")
+            folder_path = os.path.join(self.path_photos_from_camera, f"person_{person_id}")
             if os.path.exists(folder_path):
                 shutil.rmtree(folder_path)
             
             # 更新列表
-            self.registered_names.remove(name)
+            self.registered_names.remove(person_id)
             self.update_name_list()
             
-            self.update_status(f"已删除 {name} 的所有人脸数据")
-            messagebox.showinfo("成功", f"已删除 {name} 的所有人脸数据")
+            self.update_status(f"已删除 {person_id} 的所有人脸数据")
+            messagebox.showinfo("成功", f"已删除 {person_id} 的所有人脸数据")
     
     def update_save_button_text(self):
         """更新保存按钮文本"""
@@ -932,9 +1025,17 @@ class FaceCollector:
             self.hide_batch_autocomplete(idx, autocomplete_listboxes)
             return
         
-        # 过滤匹配的人名
-        filtered_names = [name for name in self.registered_names 
-                         if name.lower().startswith(current_text.lower())]
+        # 过滤匹配的人名（从"姓名_身份证号"格式中提取姓名进行匹配）
+        filtered_names = []
+        for registered_name in self.registered_names:
+            if '_' in registered_name:
+                name_part = registered_name.split('_')[0]  # 提取姓名部分
+                if name_part.lower().startswith(current_text.lower()):
+                    filtered_names.append(registered_name)
+            else:
+                # 兼容旧格式
+                if registered_name.lower().startswith(current_text.lower()):
+                    filtered_names.append(registered_name)
         
         if filtered_names:
             self.show_batch_autocomplete(idx, filtered_names, autocomplete_listboxes)
@@ -1029,15 +1130,39 @@ class FaceCollector:
         selection = listbox.curselection()
         if selection:
             selected_name = listbox.get(selection[0])
+            
             # 获取对应的输入框
             if name_entries:
-                entry = name_entries[idx]
-                entry.delete(0, tk.END)
-                entry.insert(0, selected_name)
+                name_entry = name_entries[idx]
+                # 获取身份证号输入框（需要从对话框的引用中获取）
+                dialog = name_entry.master.master.master  # 获取对话框引用
+                id_entries = getattr(dialog, 'id_entries', [])
+                
+                # 解析"姓名_身份证号"格式
+                if '_' in selected_name:
+                    parts = selected_name.split('_', 1)  # 最多分割1次，保留身份证号中的下划线
+                    if len(parts) >= 2:
+                        name = parts[0]
+                        id_number = parts[1]
+                        # 填充姓名和身份证号
+                        name_entry.delete(0, tk.END)
+                        name_entry.insert(0, name)
+                        if idx < len(id_entries):
+                            id_entries[idx].delete(0, tk.END)
+                            id_entries[idx].insert(0, id_number)
+                    else:
+                        # 如果格式不正确，只填充姓名
+                        name_entry.delete(0, tk.END)
+                        name_entry.insert(0, selected_name)
+                else:
+                    # 兼容旧格式，只填充姓名
+                    name_entry.delete(0, tk.END)
+                    name_entry.insert(0, selected_name)
+            
             self.hide_batch_autocomplete(idx, autocomplete_listboxes)
-            # 将焦点设置到输入框
-            if name_entries:
-                entry.focus_set()
+            # 将焦点设置到身份证号输入框
+            if name_entries and idx < len(id_entries):
+                id_entries[idx].focus_set()
     
     def run(self):
         """运行程序"""
