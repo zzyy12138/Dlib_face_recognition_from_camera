@@ -678,7 +678,7 @@ class TransparentFaceRecognizer:
         def ask_name_with_preview():
             popup = Toplevel(self.root) 
             popup.title("发现新的人脸")
-            popup.geometry("500x700") 
+            popup.geometry("800x800") 
             popup.attributes("-topmost",  True)
             popup.grab_set() 
             popup.resizable(False, False)  # 禁止调整大小
@@ -703,9 +703,9 @@ class TransparentFaceRecognizer:
             right = min(img.shape[1],  rect.right()) 
             face_img = img[top:bottom, left:right]
  
-            # 显示图像 
+            # 显示新检测到的人脸图像 
             try:
-                pil_img = Image.fromarray(face_img).resize((250,  250))
+                pil_img = Image.fromarray(face_img).resize((200,  200))
                 tk_img = ImageTk.PhotoImage(pil_img)
                 img_label = Label(main_frame, image=tk_img)
                 img_label.image  = tk_img 
@@ -714,32 +714,147 @@ class TransparentFaceRecognizer:
                 error_label = Label(main_frame, text="图像显示失败", font=('Arial', 12))
                 error_label.pack(pady=(0, 20))
 
-            # 输入提示
-            prompt_label = Label(main_frame, text="请输入此人信息：", font=('Arial', 12, 'bold'))
-            prompt_label.pack(pady=(0, 10))
-            
-            # 姓名输入框
-            name_frame = tk.Frame(main_frame)
-            name_frame.pack(fill=tk.X, pady=(0, 10))
-            name_label = Label(name_frame, text="姓名:", font=('Arial', 11), width=8, anchor='w')
-            name_label.pack(side=tk.LEFT)
-            name_entry = tk.Entry(name_frame, font=('Arial', 11), width=20)
-            name_entry.pack(side=tk.LEFT, padx=(5, 0))
-            name_entry.focus_set()
-            
-            # 身份证号输入框
-            id_frame = tk.Frame(main_frame)
-            id_frame.pack(fill=tk.X, pady=(0, 20))
-            id_label = Label(id_frame, text="身份证号:", font=('Arial', 11), width=8, anchor='w')
-            id_label.pack(side=tk.LEFT)
-            id_entry = tk.Entry(id_frame, font=('Arial', 11), width=20)
-            id_entry.pack(side=tk.LEFT, padx=(5, 0))
+            # 创建选项卡
+            notebook = ttk.Notebook(main_frame)
+            notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
 
-            # 按钮框架
-            button_frame = tk.Frame(main_frame)
-            button_frame.pack(pady=(0, 10))
- 
-            def on_confirm():
+            # 选项卡1：创建新文件夹
+            new_folder_frame = ttk.Frame(notebook)
+            notebook.add(new_folder_frame, text="创建新文件夹")
+
+            # 选项卡2：保存到已有文件夹
+            existing_folder_frame = ttk.Frame(notebook)
+            notebook.add(existing_folder_frame, text="保存到已有文件夹")
+
+            # ===== 选项卡1：创建新文件夹 =====
+            # 创建一个容器框架，并使用grid布局以更好地对齐
+            input_container = tk.Frame(new_folder_frame)
+            input_container.pack(pady=40, padx=30, fill=tk.X, expand=True)
+            
+            prompt_label = Label(input_container, text="请输入此人信息：", font=('Arial', 12, 'bold'))
+            prompt_label.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 20))
+
+            # 姓名
+            name_label = Label(input_container, text="姓名:", font=('Arial', 11))
+            name_label.grid(row=1, column=0, sticky='e', pady=5)
+            name_entry = tk.Entry(input_container, font=('Arial', 11))
+            name_entry.grid(row=1, column=1, sticky='ew', pady=5, padx=(10, 0))
+            name_entry.focus_set()
+
+            # 身份证号
+            id_label = Label(input_container, text="身份证号:", font=('Arial', 11))
+            id_label.grid(row=2, column=0, sticky='e', pady=5)
+            id_entry = tk.Entry(input_container, font=('Arial', 11))
+            id_entry.grid(row=2, column=1, sticky='ew', pady=5, padx=(10, 0))
+
+            # 配置列的权重，使输入框可以水平扩展
+            input_container.columnconfigure(1, weight=1)
+
+            # ===== 选项卡2：保存到已有文件夹 =====
+            # 获取已有文件夹列表
+            existing_folders = []
+            data_faces_path = "data/data_faces_from_camera/"
+            if os.path.exists(data_faces_path):
+                existing_folders = [f for f in os.listdir(data_faces_path) if f.startswith("person_")]
+            
+            if existing_folders:
+                # 创建左右分栏布局
+                content_frame = tk.Frame(existing_folder_frame)
+                content_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+                
+                # 左侧：文件夹列表
+                left_frame = tk.Frame(content_frame)
+                left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+                
+                # 文件夹选择提示
+                select_label = Label(left_frame, text="选择要保存到的文件夹：", font=('Arial', 12, 'bold'))
+                select_label.pack(pady=(0, 10))
+                
+                # 创建列表框和滚动条的容器，并设置固定高度
+                listbox_container = tk.Frame(left_frame, height=250)
+                listbox_container.pack(fill=tk.X, expand=False)
+                listbox_container.pack_propagate(False)
+                
+                scrollbar = tk.Scrollbar(listbox_container)
+                scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                
+                # 列表框，不单独设置高度，它将填充父容器
+                folder_listbox = tk.Listbox(listbox_container, yscrollcommand=scrollbar.set, font=('Arial', 10))
+                folder_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                scrollbar.config(command=folder_listbox.yview)
+                
+                # 填充文件夹列表
+                for folder in sorted(existing_folders):
+                    # 解析文件夹名称显示
+                    folder_parts = folder.split('_', 2)
+                    if len(folder_parts) >= 3:
+                        display_name = f"{folder_parts[1]}_{folder_parts[2]}"
+                    elif len(folder_parts) == 2:
+                        display_name = f"未知_{folder_parts[1]}"
+                    else:
+                        display_name = folder
+                    
+                    folder_listbox.insert(tk.END, display_name)
+                
+                # 右侧：预览区域
+                right_frame = tk.Frame(content_frame)
+                right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+                
+                preview_label = Label(right_frame, text="预览：", font=('Arial', 11, 'bold'))
+                preview_label.pack(anchor='w', pady=(0, 5))
+                
+                # 创建一个固定大小的框架来容纳预览图像
+                preview_img_frame = tk.Frame(right_frame, width=204, height=204, relief=tk.SUNKEN, borderwidth=2)
+                preview_img_frame.pack(pady=(0, 10))
+                preview_img_frame.pack_propagate(False) # 防止框架收缩
+
+                # 预览图像标签 - 放置在固定大小的框架中
+                preview_img_label = Label(preview_img_frame, text="请选择一个文件夹查看预览", font=('Arial', 10))
+                preview_img_label.pack(fill=tk.BOTH, expand=True)
+                
+                def on_folder_select(event):
+                    """当选择文件夹时更新预览"""
+                    selection = folder_listbox.curselection()
+                    if selection:
+                        selected_index = selection[0]
+                        selected_folder = existing_folders[selected_index]
+                        folder_path = os.path.join(data_faces_path, selected_folder)
+                        
+                        # 查找第一张图片
+                        try:
+                            image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                            if image_files:
+                                first_img_path = os.path.join(folder_path, image_files[0])
+                                # 读取并显示预览图像
+                                try:
+                                    img_path_abs = os.path.abspath(first_img_path)
+                                    img = cv2.imdecode(np.fromfile(img_path_abs, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                    if img is not None:
+                                        # 转换为RGB并调整大小
+                                        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                                        pil_img = Image.fromarray(img_rgb).resize((200, 200), Image.Resampling.LANCZOS)
+                                        tk_img = ImageTk.PhotoImage(pil_img)
+                                        preview_img_label.configure(image=tk_img, text="")
+                                        preview_img_label.image = tk_img
+                                    else:
+                                        preview_img_label.configure(image="", text="无法读取图像")
+                                except Exception as e:
+                                    preview_img_label.configure(image="", text=f"图像加载失败: {str(e)}")
+                            else:
+                                preview_img_label.configure(image="", text="文件夹中没有图像")
+                        except Exception as e:
+                            preview_img_label.configure(image="", text=f"无法访问文件夹: {str(e)}")
+                
+                # 绑定选择事件
+                folder_listbox.bind('<<ListboxSelect>>', on_folder_select)
+                
+            else:
+                # 没有现有文件夹时的提示
+                no_folder_label = Label(existing_folder_frame, text="没有找到现有的人脸文件夹", font=('Arial', 12))
+                no_folder_label.pack(pady=50)
+
+            def on_confirm_new_folder():
+                """确认创建新文件夹"""
                 name = name_entry.get().strip()
                 id_number = id_entry.get().strip()
                 
@@ -806,6 +921,76 @@ class TransparentFaceRecognizer:
                 self.current_new_face  = None 
                 self.new_face_popup_window = None
 
+            def on_confirm_existing_folder():
+                """确认保存到已有文件夹"""
+                selection = folder_listbox.curselection()
+                if not selection:
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", "请选择一个文件夹")
+                    return
+                
+                selected_index = selection[0]
+                selected_folder = existing_folders[selected_index]
+                folder_path = os.path.join(data_faces_path, selected_folder)
+                
+                # 解析文件夹名称获取人员信息
+                folder_parts = selected_folder.split('_', 2)
+                if len(folder_parts) >= 3:
+                    person_name = f"{folder_parts[1]}_{folder_parts[2]}"
+                elif len(folder_parts) == 2:
+                    person_name = folder_parts[1]
+                else:
+                    person_name = selected_folder
+                
+                # 查找可用的文件名 
+                img_index = 1 
+                while os.path.exists(os.path.join(folder_path,  f"img_face_{img_index}.jpg")):
+                    img_index += 1 
+                    
+                img_filename = os.path.join(folder_path,  f"img_face_{img_index}.jpg")
+                
+                # 保存图像
+                try:
+                    # 转换颜色空间
+                    face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
+                    # 使用imencode保存图像
+                    success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
+                    if success:
+                        with open(img_filename, 'wb') as f:
+                            f.write(encoded_img.tobytes())
+                    else:
+                        raise Exception("图像编码失败")
+                except Exception as e:
+                    logging.error(f"保存图像失败: {str(e)}")
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", f"保存图像失败: {str(e)}")
+                    return
+                
+                # 更新内存中的数据库 - 如果该人员已存在，更新特征；否则添加新记录
+                if person_name in self.face_name_known_list:
+                    # 更新现有记录的特征（取平均值）
+                    idx = self.face_name_known_list.index(person_name)
+                    old_feature = self.face_feature_known_list[idx]
+                    new_feature = np.mean([old_feature, face_data['feature']], axis=0)
+                    self.face_feature_known_list[idx] = list(new_feature)
+                    logging.info(f" 更新人脸特征: {person_name}")
+                else:
+                    # 添加新记录
+                    self.face_name_known_list.append(person_name) 
+                    self.face_feature_known_list.append(face_data['feature']) 
+                    self.face_image_path_list.append(img_filename) 
+                    logging.info(f" 新增人脸: {person_name}，图像保存为 {img_filename}")
+                
+                # 更新CSV文件 
+                self.update_face_database_csv(person_name, face_data['feature'])
+                
+                popup.destroy() 
+                
+                # 处理完成，清理状态
+                self.is_processing_new_face  = False 
+                self.current_new_face  = None 
+                self.new_face_popup_window = None
+
             def on_cancel():
                 logging.info("用户取消添加新面孔")
                 popup.destroy() 
@@ -814,18 +999,28 @@ class TransparentFaceRecognizer:
                 self.current_new_face  = None 
                 self.new_face_popup_window = None
 
-            # 确认按钮
-            confirm_btn = tk.Button(button_frame, text="确认添加", command=on_confirm, 
-                                  font=('Arial', 11), width=12, bg='green', fg='white')
-            confirm_btn.pack(side=tk.LEFT, padx=5)
+            # 按钮框架
+            button_frame = tk.Frame(main_frame)
+            button_frame.pack(pady=(0, 10))
+            
+            # 创建新文件夹按钮
+            new_folder_btn = tk.Button(button_frame, text="创建新文件夹", command=on_confirm_new_folder, 
+                                     font=('Arial', 11), width=15, bg='green', fg='white')
+            new_folder_btn.pack(side=tk.LEFT, padx=5)
+            
+            # 保存到已有文件夹按钮（仅在有现有文件夹时显示）
+            if existing_folders:
+                existing_folder_btn = tk.Button(button_frame, text="保存到选中文件夹", command=on_confirm_existing_folder, 
+                                             font=('Arial', 11), width=15, bg='blue', fg='white')
+                existing_folder_btn.pack(side=tk.LEFT, padx=5)
             
             # 跳过按钮
             cancel_btn = tk.Button(button_frame, text="跳过", command=on_cancel, 
                                  font=('Arial', 11), width=12, bg='gray', fg='white')
             cancel_btn.pack(side=tk.LEFT, padx=5)
             
-            # 绑定回车键
-            popup.bind('<Return>',  lambda e: on_confirm())
+            # 绑定回车键到新文件夹确认
+            popup.bind('<Return>',  lambda e: on_confirm_new_folder())
             popup.protocol("WM_DELETE_WINDOW",  on_cancel)
  
         self.root.after(0,  ask_name_with_preview)
@@ -895,7 +1090,7 @@ class TransparentFaceRecognizer:
             )
             
             shape = predictor(img, rect)
-            feature = face_reco_model.compute_face_descriptor(img,  shape)
+            feature = face_reco_model.compute_face_descriptor(img, shape)
             name = "Unknown"
             known = False 
             
