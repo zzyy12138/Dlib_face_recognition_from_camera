@@ -419,6 +419,8 @@ class TransparentFaceRecognizer:
                 
                 # 删除之前的进度条
                 self.canvas.delete("progress_bar")
+                # 删除之前的状态文本，防止重叠
+                self.canvas.delete("status_text")
                 
                 # 绘制新的进度条
                 self.canvas.create_rectangle(
@@ -1251,6 +1253,7 @@ class TransparentFaceRecognizer:
     def regenerate_csv_from_images(self):
         """从图像文件夹重新生成CSV文件"""
         print("正在从图像文件夹重新生成人脸特征文件...")
+        logging.info("正在从图像文件夹重新生成人脸特征文件...")
         try:
             # 清空现有数据
             self.face_name_known_list.clear()
@@ -1266,6 +1269,7 @@ class TransparentFaceRecognizer:
             
             if not person_folders:
                 print("没有找到任何人脸图像文件夹")
+                logging.warning("没有找到任何人脸图像文件夹")
                 return False
             
             # 创建新的CSV文件
@@ -1289,7 +1293,9 @@ class TransparentFaceRecognizer:
                         display_name = f"未知_{folder_parts[1]}"
                     else:
                         # 异常格式，跳过
-                        print(f"警告: 跳过异常格式的文件夹 {person_folder}")
+                        msg = f"警告: 跳过异常格式的文件夹 {person_folder}"
+                        print(msg)
+                        logging.warning(msg)
                         continue
                     
                     folder_path = os.path.join(data_faces_path, person_folder)
@@ -1299,7 +1305,9 @@ class TransparentFaceRecognizer:
                     try:
                         image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
                     except Exception as e:
-                        print(f"警告: 无法读取文件夹 {person_folder}: {str(e)}")
+                        msg = f"警告: 无法读取文件夹 {person_folder}: {str(e)}"
+                        print(msg)
+                        logging.warning(msg)
                         # 即使无法读取文件夹，也继续处理，生成空数据
                     
                     # 提取该人员的所有特征
@@ -1314,7 +1322,9 @@ class TransparentFaceRecognizer:
                                 img_path_abs = os.path.abspath(img_path)
                                 img = cv2.imdecode(np.fromfile(img_path_abs, dtype=np.uint8), cv2.IMREAD_COLOR)
                                 if img is None:
-                                    print(f"警告: 无法读取图像 {img_path}")
+                                    msg = f"警告: 无法读取图像 {img_path}"
+                                    print(msg)
+                                    logging.warning(msg)
                                     continue
                                 
                                 # 检测人脸 - 尝试不同尺寸
@@ -1351,7 +1361,9 @@ class TransparentFaceRecognizer:
                                             )
                                 
                                 if not faces:
-                                    print(f"警告: 在图像 {img_path} 中没有检测到人脸")
+                                    msg = f"警告: 在图像 {img_path} 中没有检测到人脸"
+                                    print(msg)
+                                    logging.warning(msg)
                                     continue
                                 
                                 # 提取特征
@@ -1361,18 +1373,24 @@ class TransparentFaceRecognizer:
                                 processed_images += 1
                                 
                             except Exception as e:
-                                print(f"警告: 处理图像 {img_path} 时出错: {str(e)}")
+                                msg = f"警告: 处理图像 {img_path} 时出错: {str(e)}"
+                                print(msg)
+                                logging.warning(msg)
                                 continue
                     
                     # 无论是否成功提取到特征，都生成CSV数据
                     if features_list:
                         # 计算平均特征
                         avg_feature = np.mean(features_list, axis=0)
-                        print(f"已处理 {display_name}: {processed_images} 张图像成功提取特征")
+                        msg = f"已处理 {display_name}: {processed_images} 张图像成功提取特征"
+                        print(msg)
+                        logging.info(msg)
                     else:
                         # 生成128维的零向量作为默认特征
                         avg_feature = np.zeros(128)
-                        print(f"警告: {display_name} 没有成功提取到特征，使用默认零向量")
+                        msg = f"警告: {display_name} 没有成功提取到特征，使用默认零向量"
+                        print(msg)
+                        logging.warning(msg)
                     
                     # 写入CSV - 无论是否有特征都写入
                     writer.writerow([person_name] + list(avg_feature))
@@ -1392,11 +1410,15 @@ class TransparentFaceRecognizer:
                     feature_str = ','.join(map(str, avg_feature))
                     self.processed_features.add(feature_str)
             
-            print(f"CSV文件重新生成完成，共处理 {len(self.face_name_known_list)} 个人")
+            msg = f"CSV文件重新生成完成，共处理 {len(self.face_name_known_list)} 个人"
+            print(msg)
+            logging.info(msg)
             return True
             
         except Exception as e:
-            print(f"重新生成CSV文件时出错: {str(e)}")
+            msg = f"重新生成CSV文件时出错: {str(e)}"
+            print(msg)
+            logging.error(msg)
             return False
 
 def detect_gpu_availability():
