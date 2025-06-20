@@ -1083,92 +1083,102 @@ class TransparentFaceRecognizer:
                     folder_path = os.path.join(data_faces_path, person_folder)
                     
                     # 获取该人员的所有图像
+                    image_files = []
                     try:
                         image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
                     except Exception as e:
                         print(f"警告: 无法读取文件夹 {person_folder}: {str(e)}")
-                        continue
-                    
-                    if not image_files:
-                        print(f"警告: {person_folder} 文件夹中没有找到图像文件")
-                        continue
+                        # 即使无法读取文件夹，也继续处理，生成空数据
                     
                     # 提取该人员的所有特征
                     features_list = []
-                    for img_file in image_files:
-                        img_path = os.path.join(folder_path, img_file)
-                        try:
-                            # 读取图像 - 使用绝对路径避免编码问题
-                            img_path_abs = os.path.abspath(img_path)
-                            img = cv2.imdecode(np.fromfile(img_path_abs, dtype=np.uint8), cv2.IMREAD_COLOR)
-                            if img is None:
-                                print(f"警告: 无法读取图像 {img_path}")
-                                continue
-                            
-                            # 检测人脸 - 尝试不同尺寸
-                            faces = cnn_face_detector(img, 0)
-                            
-                            # 如果原始尺寸没有检测到，尝试缩小图像
-                            if not faces:
-                                img_small = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
-                                faces = cnn_face_detector(img_small, 0)
-                                if faces:
-                                    # 如果缩小后检测到，将坐标放大回原始尺寸
-                                    for face in faces:
-                                        rect = face.rect
-                                        face.rect = dlib.rectangle(
-                                            int(rect.left() * 2),
-                                            int(rect.top() * 2),
-                                            int(rect.right() * 2),
-                                            int(rect.bottom() * 2)
-                                        )
-                            
-                            # 如果还是没有检测到，尝试放大图像
-                            if not faces:
-                                img_large = cv2.resize(img, (0, 0), fx=2.0, fy=2.0)
-                                faces = cnn_face_detector(img_large, 0)
-                                if faces:
-                                    # 如果放大后检测到，将坐标缩小回原始尺寸
-                                    for face in faces:
-                                        rect = face.rect
-                                        face.rect = dlib.rectangle(
-                                            int(rect.left() / 2),
-                                            int(rect.top() / 2),
-                                            int(rect.right() / 2),
-                                            int(rect.bottom() / 2)
-                                        )
-                            
-                            if not faces:
-                                print(f"警告: 在图像 {img_path} 中没有检测到人脸")
-                                continue
-                            
-                            # 提取特征
-                            shape = predictor(img, faces[0].rect)
-                            feature = face_reco_model.compute_face_descriptor(img, shape)
-                            features_list.append(feature)
-                            
-                        except Exception as e:
-                            print(f"警告: 处理图像 {img_path} 时出错: {str(e)}")
-                            continue
+                    processed_images = 0
                     
+                    if image_files:
+                        for img_file in image_files:
+                            img_path = os.path.join(folder_path, img_file)
+                            try:
+                                # 读取图像 - 使用绝对路径避免编码问题
+                                img_path_abs = os.path.abspath(img_path)
+                                img = cv2.imdecode(np.fromfile(img_path_abs, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                if img is None:
+                                    print(f"警告: 无法读取图像 {img_path}")
+                                    continue
+                                
+                                # 检测人脸 - 尝试不同尺寸
+                                faces = cnn_face_detector(img, 0)
+                                
+                                # 如果原始尺寸没有检测到，尝试缩小图像
+                                if not faces:
+                                    img_small = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+                                    faces = cnn_face_detector(img_small, 0)
+                                    if faces:
+                                        # 如果缩小后检测到，将坐标放大回原始尺寸
+                                        for face in faces:
+                                            rect = face.rect
+                                            face.rect = dlib.rectangle(
+                                                int(rect.left() * 2),
+                                                int(rect.top() * 2),
+                                                int(rect.right() * 2),
+                                                int(rect.bottom() * 2)
+                                            )
+                                
+                                # 如果还是没有检测到，尝试放大图像
+                                if not faces:
+                                    img_large = cv2.resize(img, (0, 0), fx=2.0, fy=2.0)
+                                    faces = cnn_face_detector(img_large, 0)
+                                    if faces:
+                                        # 如果放大后检测到，将坐标缩小回原始尺寸
+                                        for face in faces:
+                                            rect = face.rect
+                                            face.rect = dlib.rectangle(
+                                                int(rect.left() / 2),
+                                                int(rect.top() / 2),
+                                                int(rect.right() / 2),
+                                                int(rect.bottom() / 2)
+                                            )
+                                
+                                if not faces:
+                                    print(f"警告: 在图像 {img_path} 中没有检测到人脸")
+                                    continue
+                                
+                                # 提取特征
+                                shape = predictor(img, faces[0].rect)
+                                feature = face_reco_model.compute_face_descriptor(img, shape)
+                                features_list.append(feature)
+                                processed_images += 1
+                                
+                            except Exception as e:
+                                print(f"警告: 处理图像 {img_path} 时出错: {str(e)}")
+                                continue
+                    
+                    # 无论是否成功提取到特征，都生成CSV数据
                     if features_list:
                         # 计算平均特征
                         avg_feature = np.mean(features_list, axis=0)
-                        
-                        # 写入CSV
-                        writer.writerow([person_name] + list(avg_feature))
-                        
-                        # 更新内存数据
-                        self.face_name_known_list.append(person_name)
-                        self.face_feature_known_list.append(list(avg_feature))
-                        self.face_image_path_list.append(os.path.join(folder_path, image_files[0]))
-                        
-                        feature_str = ','.join(map(str, avg_feature))
-                        self.processed_features.add(feature_str)
-                        
-                        print(f"已处理 {display_name}: {len(features_list)} 张图像")
+                        print(f"已处理 {display_name}: {processed_images} 张图像成功提取特征")
                     else:
-                        print(f"警告: {display_name} 没有成功提取到特征")
+                        # 生成128维的零向量作为默认特征
+                        avg_feature = np.zeros(128)
+                        print(f"警告: {display_name} 没有成功提取到特征，使用默认零向量")
+                    
+                    # 写入CSV - 无论是否有特征都写入
+                    writer.writerow([person_name] + list(avg_feature))
+                    
+                    # 更新内存数据
+                    self.face_name_known_list.append(person_name)
+                    self.face_feature_known_list.append(list(avg_feature))
+                    
+                    # 设置图像路径 - 如果有图像文件则使用第一个，否则使用默认路径
+                    if image_files:
+                        self.face_image_path_list.append(os.path.join(folder_path, image_files[0]))
+                    else:
+                        # 创建一个默认的图像路径，即使文件不存在
+                        default_img_path = os.path.join(folder_path, "img_face_1.jpg")
+                        self.face_image_path_list.append(default_img_path)
+                    
+                    feature_str = ','.join(map(str, avg_feature))
+                    self.processed_features.add(feature_str)
             
             print(f"CSV文件重新生成完成，共处理 {len(self.face_name_known_list)} 个人")
             return True
