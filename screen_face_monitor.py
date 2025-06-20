@@ -348,47 +348,115 @@ class TransparentFaceRecognizer:
         threading.Thread(target=run_face_collector, daemon=True).start()
  
     def show_loading_progress(self, message, task_function):
-        """显示加载进度条"""
+        """显示加载进度条（直接在主窗口上显示）"""
         def show_progress():
-            # 创建进度条窗口
-            progress_window = tk.Toplevel(self.root)
-            progress_window.title("处理中")
-            progress_window.geometry("400x150")
-            progress_window.attributes("-topmost", True)
-            progress_window.grab_set()
+            # 清空画布
+            self.canvas.delete("all")
             
-            # 居中显示
-            progress_window.update_idletasks()
-            x = (progress_window.winfo_screenwidth() // 2) - (400 // 2)
-            y = (progress_window.winfo_screenheight() // 2) - (180 // 2)
-            progress_window.geometry(f"400x180+{x}+{y}")
+            # 创建半透明背景
+            bg_width = 500
+            bg_height = 200
+            x = (self.screen_width - bg_width) // 2
+            y = (self.screen_height - bg_height) // 2
             
-            # 消息标签
-            message_label = tk.Label(progress_window, text=message, font=('Arial', 12))
-            message_label.pack(pady=20)
+            # 绘制背景
+            self.canvas.create_rectangle(
+                x, y, x + bg_width, y + bg_height,
+                fill='black', outline='white', width=2, stipple='gray50'
+            )
             
-            # 进度条
-            progress_bar = tk.ttk.Progressbar(progress_window, mode='indeterminate', length=300)
-            progress_bar.pack(pady=10)
-            progress_bar.start()
+            # 标题
+            self.canvas.create_text(
+                self.screen_width // 2, y + 30,
+                text="人脸识别监控系统初始化", 
+                fill='lime', 
+                font=('Arial', 16, 'bold')
+            )
             
-            # 状态标签
-            status_label = tk.Label(progress_window, text="请稍候...", font=('Arial', 10))
-            status_label.pack(pady=10)
+            # 消息
+            self.canvas.create_text(
+                self.screen_width // 2, y + 70,
+                text=message, 
+                fill='white', 
+                font=('Arial', 12)
+            )
+            
+            # 进度条背景
+            progress_width = 400
+            progress_height = 20
+            progress_x = (self.screen_width - progress_width) // 2
+            progress_y = y + 110
+            
+            self.canvas.create_rectangle(
+                progress_x, progress_y, progress_x + progress_width, progress_y + progress_height,
+                fill='gray', outline='white', width=1
+            )
+            
+            # 进度条（动画效果）
+            def animate_progress():
+                # 创建移动的进度条
+                bar_width = 50
+                bar_x = progress_x + 5
+                bar_y = progress_y + 2
+                bar_height = progress_height - 4
+                
+                # 删除之前的进度条
+                self.canvas.delete("progress_bar")
+                
+                # 绘制新的进度条
+                self.canvas.create_rectangle(
+                    bar_x, bar_y, bar_x + bar_width, bar_y + bar_height,
+                    fill='lime', outline='', tags="progress_bar"
+                )
+                
+                # 更新位置
+                bar_x += 10
+                if bar_x > progress_x + progress_width - bar_width - 5:
+                    bar_x = progress_x + 5
+                
+                # 状态文本
+                self.canvas.create_text(
+                    self.screen_width // 2, y + 150,
+                    text="请稍候...", 
+                    fill='cyan', 
+                    font=('Arial', 10),
+                    tags="status_text"
+                )
+                
+                # 继续动画
+                if hasattr(self, 'progress_active') and self.progress_active:
+                    self.root.after(100, animate_progress)
+            
+            # 开始动画
+            self.progress_active = True
+            animate_progress()
             
             def update_status(text):
-                status_label.config(text=text)
-                progress_window.update()
+                # 更新状态文本
+                self.canvas.delete("status_text")
+                self.canvas.create_text(
+                    self.screen_width // 2, y + 150,
+                    text=text, 
+                    fill='cyan', 
+                    font=('Arial', 10),
+                    tags="status_text"
+                )
+                self.root.update()
             
             def run_task():
                 try:
                     update_status("正在重新加载人脸数据库...")
                     task_function()
-                    update_status("更新完成！")
-                    progress_window.after(1000, progress_window.destroy)  # 1秒后关闭
+                    update_status("初始化完成！")
+                    # 停止动画
+                    self.progress_active = False
+                    # 1秒后清除进度条
+                    self.root.after(1000, lambda: self.canvas.delete("all"))
                 except Exception as e:
-                    update_status(f"更新失败: {str(e)}")
-                    progress_window.after(2000, progress_window.destroy)  # 2秒后关闭
+                    update_status(f"初始化失败: {str(e)}")
+                    self.progress_active = False
+                    # 2秒后清除进度条
+                    self.root.after(2000, lambda: self.canvas.delete("all"))
             
             # 在新线程中运行任务
             threading.Thread(target=run_task, daemon=True).start()
@@ -721,6 +789,11 @@ class TransparentFaceRecognizer:
         # 检查弹窗状态，确保状态一致性
         self.check_popup_status()
         
+        # 如果正在显示进度条，跳过人脸检测
+        if hasattr(self, 'progress_active') and self.progress_active:
+            self.root.after(self.process_interval, self.process_frame)
+            return
+        
         self.canvas.delete("all") 
         img = self.get_screen() 
         scale = self.image_scale if self.cpu_optimization else 0.5
@@ -787,7 +860,7 @@ class TransparentFaceRecognizer:
         # 绘制结果 
         self.draw_results() 
         self.update_fps() 
-        self.root.after(self.process_interval,  self.process_frame) 
+        self.root.after(self.process_interval,  self.process_frame)
  
     def draw_results(self):
         """在画布上绘制检测结果"""
