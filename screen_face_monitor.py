@@ -209,11 +209,17 @@ class TransparentFaceRecognizer:
             self.toggle_status_display
         )
         
+        self.manual_add_item = pystray.MenuItem(
+            "手动添加人脸",
+            self.manual_add_face
+        )
+        
         menu = pystray.Menu(
             self.toggle_popup_item, 
             self.toggle_auto_add_item,
             self.threshold_item,
             self.toggle_status_item,
+            pystray.MenuItem('手动添加人脸', self.manual_add_face),
             pystray.MenuItem('退出', self.quit_program) 
         )
         
@@ -301,6 +307,68 @@ class TransparentFaceRecognizer:
         if icon:
             icon.update_menu()
         logging.info(f" 状态显示已 {'开启' if self.show_status_display else '关闭'}")
+ 
+    def manual_add_face(self, icon=None, item=None):
+        """手动添加人脸"""
+        def run_face_collector():
+            try:
+                logging.info("启动手动添加人脸工具")
+                
+                # 导入并运行人脸采集工具
+                import subprocess
+                import sys
+                
+                # 获取当前脚本的目录
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                face_collector_script = os.path.join(script_dir, "face_collector_from_image.py")
+                
+                if os.path.exists(face_collector_script):
+                    # 使用subprocess启动人脸采集工具
+                    process = subprocess.Popen([sys.executable, face_collector_script])
+                    
+                    # 等待进程完成
+                    process.wait()
+                    
+                    # 进程完成后，重新加载人脸数据库
+                    logging.info("人脸采集工具已关闭，重新加载人脸数据库")
+                    self.reload_face_database()
+                    
+                else:
+                    logging.error(f"找不到人脸采集工具脚本: {face_collector_script}")
+                    # 如果找不到脚本，显示错误信息
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", f"找不到人脸采集工具脚本:\n{face_collector_script}")
+                    
+            except Exception as e:
+                logging.error(f"启动人脸采集工具时出错: {str(e)}")
+                import tkinter.messagebox as messagebox
+                messagebox.showerror("错误", f"启动人脸采集工具时出错:\n{str(e)}")
+        
+        # 在新线程中运行，避免阻塞主程序
+        threading.Thread(target=run_face_collector, daemon=True).start()
+ 
+    def reload_face_database(self):
+        """重新加载人脸数据库"""
+        try:
+            logging.info("开始重新加载人脸数据库")
+            
+            # 清空现有数据
+            self.face_name_known_list.clear()
+            self.face_feature_known_list.clear()
+            self.face_image_path_list.clear()
+            self.processed_features.clear()
+            
+            # 重新加载数据库
+            self.get_face_database()
+            
+            # 重新生成CSV文件
+            if self.regenerate_csv_from_images():
+                logging.info("人脸数据库重新加载成功")
+            else:
+                logging.warning("人脸数据库重新加载失败")
+                
+        except Exception as e:
+            logging.error(f"重新加载人脸数据库时出错: {str(e)}")
  
     def setup_exit_controls(self):
         """设置退出控制"""
@@ -690,7 +758,7 @@ class TransparentFaceRecognizer:
         if self.show_status_display:
             # 创建半透明背景
             bg_width = 310
-            bg_height = 180  # 增加高度以容纳GPU信息
+            bg_height = 180  # 恢复原来的高度
             self.canvas.create_rectangle(
                 10, 10, 10 + bg_width, 10 + bg_height,
                 fill='black', outline='white', width=2, stipple='gray50'
