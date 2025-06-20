@@ -116,7 +116,7 @@ class FaceCollector:
                 font=('Microsoft YaHei UI', 11, 'bold'), 
                 fg='#2c3e50', bg='white').pack(anchor=tk.W, pady=(0, 5))
         
-        # 创建输入框和自动完成框架
+        # 创建输入框框架
         self.entry_frame = tk.Frame(name_frame, bg='white')
         self.entry_frame.pack(fill=tk.X)
         
@@ -135,29 +135,6 @@ class FaceCollector:
         self.entry_id = tk.Entry(id_frame, font=('Microsoft YaHei UI', 11),
                                 relief=tk.SOLID, bd=1)
         self.entry_id.pack(fill=tk.X, pady=(0, 8))
-        
-        # 创建自动完成下拉列表
-        self.autocomplete_listbox = tk.Listbox(name_frame, 
-                                              font=('Microsoft YaHei UI', 10),
-                                              relief=tk.SOLID, bd=1,
-                                              bg='white', fg='#2c3e50',
-                                              selectbackground='#3498db',
-                                              selectforeground='white',
-                                              height=4)
-        
-        # 绑定输入事件
-        self.entry_name.bind('<KeyRelease>', self.on_name_input)
-        self.entry_name.bind('<KeyPress>', self.on_name_keypress)
-        self.entry_name.bind('<FocusOut>', self.hide_autocomplete)
-        self.entry_name.bind('<FocusIn>', self.on_name_focus)
-        
-        # 绑定下拉列表事件
-        self.autocomplete_listbox.bind('<Double-Button-1>', self.select_autocomplete)
-        self.autocomplete_listbox.bind('<Return>', self.select_autocomplete)
-        
-        # 自动完成相关变量
-        self.autocomplete_visible = False
-        self.filtered_names = []
         
         # 保存按钮
         self.btn_save = tk.Button(self.frame_right, text="💾 保存所有人脸", 
@@ -206,6 +183,10 @@ class FaceCollector:
                                        height=8)  # 限制列表高度
         self.listbox_names.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.listbox_names.yview)
+        
+        # 绑定点击事件，点击时自动填充信息
+        self.listbox_names.bind('<Double-Button-1>', self.on_name_list_click)
+        self.listbox_names.bind('<Return>', self.on_name_list_click)
         
         # 删除按钮
         self.btn_delete = tk.Button(self.frame_right, text="🗑️ 删除选中的人员信息", 
@@ -268,162 +249,6 @@ class FaceCollector:
         self.listbox_names.delete(0, tk.END)
         for name in self.registered_names:
             self.listbox_names.insert(tk.END, name)
-        
-        # 如果当前有自动完成列表显示，重新过滤
-        if self.autocomplete_visible:
-            current_text = self.entry_name.get().strip()
-            if current_text:
-                # 过滤匹配的人名（从"姓名_身份证号"格式中提取姓名进行匹配）
-                self.filtered_names = []
-                for registered_name in self.registered_names:
-                    if '_' in registered_name:
-                        name_part = registered_name.split('_')[0]  # 提取姓名部分
-                        if name_part.lower().startswith(current_text.lower()):
-                            self.filtered_names.append(registered_name)
-                    else:
-                        # 兼容旧格式
-                        if registered_name.lower().startswith(current_text.lower()):
-                            self.filtered_names.append(registered_name)
-                
-                if self.filtered_names:
-                    self.show_autocomplete()
-                else:
-                    self.hide_autocomplete()
-    
-    def on_name_input(self, event):
-        """处理姓名输入事件"""
-        # 忽略特殊键
-        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Tab']:
-            return
-        
-        current_text = self.entry_name.get().strip()
-        
-        if not current_text:
-            self.hide_autocomplete()
-            return
-        
-        # 过滤匹配的人名（从"姓名_身份证号"格式中提取姓名进行匹配）
-        self.filtered_names = []
-        for registered_name in self.registered_names:
-            if '_' in registered_name:
-                name_part = registered_name.split('_')[0]  # 提取姓名部分
-                if name_part.lower().startswith(current_text.lower()):
-                    self.filtered_names.append(registered_name)
-            else:
-                # 兼容旧格式
-                if registered_name.lower().startswith(current_text.lower()):
-                    self.filtered_names.append(registered_name)
-        
-        if self.filtered_names:
-            self.show_autocomplete()
-        else:
-            self.hide_autocomplete()
-    
-    def on_name_keypress(self, event):
-        """处理姓名输入框按键事件"""
-        if not self.autocomplete_visible:
-            return
-        
-        if event.keysym == 'Up':
-            self.navigate_autocomplete(-1)
-            return 'break'
-        elif event.keysym == 'Down':
-            self.navigate_autocomplete(1)
-            return 'break'
-        elif event.keysym == 'Return':
-            if self.autocomplete_listbox.curselection():
-                self.select_autocomplete()
-                return 'break'
-        elif event.keysym == 'Escape':
-            self.hide_autocomplete()
-            return 'break'
-    
-    def on_name_focus(self, event):
-        """处理姓名输入框获得焦点事件"""
-        current_text = self.entry_name.get().strip()
-        if current_text:
-            self.on_name_input(event)
-    
-    def show_autocomplete(self):
-        """显示自动完成下拉列表"""
-        if not self.filtered_names:
-            return
-        
-        # 清空并填充列表
-        self.autocomplete_listbox.delete(0, tk.END)
-        for name in self.filtered_names:
-            self.autocomplete_listbox.insert(tk.END, name)
-        
-        # 显示下拉列表
-        if not self.autocomplete_visible:
-            self.autocomplete_listbox.pack(fill=tk.X, pady=(0, 8))
-            self.autocomplete_visible = True
-        
-        # 选中第一项
-        if self.autocomplete_listbox.size() > 0:
-            self.autocomplete_listbox.selection_set(0)
-    
-    def hide_autocomplete(self, event=None):
-        """隐藏自动完成下拉列表"""
-        if self.autocomplete_visible:
-            self.autocomplete_listbox.pack_forget()
-            self.autocomplete_visible = False
-    
-    def navigate_autocomplete(self, direction):
-        """在自动完成列表中导航"""
-        if not self.autocomplete_visible or not self.filtered_names:
-            return
-        
-        current_selection = self.autocomplete_listbox.curselection()
-        if not current_selection:
-            self.autocomplete_listbox.selection_set(0)
-            return
-        
-        current_index = current_selection[0]
-        new_index = current_index + direction
-        
-        # 循环选择
-        if new_index < 0:
-            new_index = len(self.filtered_names) - 1
-        elif new_index >= len(self.filtered_names):
-            new_index = 0
-        
-        self.autocomplete_listbox.selection_clear(0, tk.END)
-        self.autocomplete_listbox.selection_set(new_index)
-        self.autocomplete_listbox.see(new_index)
-    
-    def select_autocomplete(self, event=None):
-        """选择自动完成项"""
-        if not self.autocomplete_visible:
-            return
-        
-        selection = self.autocomplete_listbox.curselection()
-        if selection:
-            selected_name = self.autocomplete_listbox.get(selection[0])
-            
-            # 解析"姓名_身份证号"格式
-            if '_' in selected_name:
-                parts = selected_name.split('_', 1)  # 最多分割1次，保留身份证号中的下划线
-                if len(parts) >= 2:
-                    name = parts[0]
-                    id_number = parts[1]
-                    # 填充姓名和身份证号
-                    self.entry_name.delete(0, tk.END)
-                    self.entry_name.insert(0, name)
-                    self.entry_id.delete(0, tk.END)
-                    self.entry_id.insert(0, id_number)
-                else:
-                    # 如果格式不正确，只填充姓名
-                    self.entry_name.delete(0, tk.END)
-                    self.entry_name.insert(0, selected_name)
-            else:
-                # 兼容旧格式，只填充姓名
-                self.entry_name.delete(0, tk.END)
-                self.entry_name.insert(0, selected_name)
-            
-            self.hide_autocomplete()
-            # 将焦点设置到身份证号输入框
-            self.entry_id.focus_set()
     
     def decode_path(self, file_path):
         """处理中文路径编码问题"""
@@ -446,7 +271,7 @@ class FaceCollector:
             return file_path
         except:
             return file_path
-
+    
     def select_image(self):
         """选择图片文件"""
         self.update_status("正在选择图片...")
@@ -833,7 +658,6 @@ class FaceCollector:
         # 创建输入框和自动完成列表
         name_entries = []
         id_entries = []
-        autocomplete_listboxes = []
         
         for i, face_idx in enumerate(self.selected_faces):
             # 为每个人脸创建一个框架
@@ -870,26 +694,6 @@ class FaceCollector:
             id_entry = tk.Entry(id_input_frame, font=('Microsoft YaHei UI', 9))
             id_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
             id_entries.append(id_entry)
-            
-            # 自动完成下拉列表
-            autocomplete_listbox = tk.Listbox(name_input_frame, 
-                                            font=('Microsoft YaHei UI', 9),
-                                            relief=tk.SOLID, bd=1,
-                                            bg='white', fg='#2c3e50',
-                                            selectbackground='#3498db',
-                                            selectforeground='white',
-                                            height=3)
-            autocomplete_listboxes.append(autocomplete_listbox)
-            
-            # 绑定输入事件
-            name_entry.bind('<KeyRelease>', lambda e, idx=i: self.on_batch_name_input(e, idx, name_entries, autocomplete_listboxes))
-            name_entry.bind('<KeyPress>', lambda e, idx=i: self.on_batch_name_keypress(e, idx, autocomplete_listboxes))
-            name_entry.bind('<FocusOut>', lambda e, idx=i: self.hide_batch_autocomplete(idx, autocomplete_listboxes))
-            name_entry.bind('<FocusIn>', lambda e, idx=i: self.on_batch_name_focus(e, idx, name_entries, autocomplete_listboxes))
-            
-            # 绑定下拉列表事件
-            autocomplete_listbox.bind('<Double-Button-1>', lambda e, idx=i: self.select_batch_autocomplete(e, idx, name_entries, autocomplete_listboxes))
-            autocomplete_listbox.bind('<Return>', lambda e, idx=i: self.select_batch_autocomplete(e, idx, name_entries, autocomplete_listboxes))
         
         # 保存按钮
         def save_batch():
@@ -916,7 +720,6 @@ class FaceCollector:
         # 存储对话框引用以便后续使用
         dialog.name_entries = name_entries
         dialog.id_entries = id_entries
-        dialog.autocomplete_listboxes = autocomplete_listboxes
     
     def batch_save_faces(self, names, id_numbers):
         """批量保存不同姓名的人脸"""
@@ -1013,156 +816,35 @@ class FaceCollector:
         else:
             self.btn_save.config(text="💾 保存所有人脸")
     
-    def on_batch_name_input(self, event, idx, name_entries, autocomplete_listboxes):
-        """处理批量保存对话框中的姓名输入事件"""
-        # 忽略特殊键
-        if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Tab']:
+    def on_name_list_click(self, event):
+        """处理已注册人名列表的点击事件"""
+        selection = self.listbox_names.curselection()
+        if not selection:
             return
         
-        current_text = name_entries[idx].get().strip()
-        
-        if not current_text:
-            self.hide_batch_autocomplete(idx, autocomplete_listboxes)
+        person_id = self.listbox_names.get(selection[0])
+        if not person_id:
             return
         
-        # 过滤匹配的人名（从"姓名_身份证号"格式中提取姓名进行匹配）
-        filtered_names = []
-        for registered_name in self.registered_names:
-            if '_' in registered_name:
-                name_part = registered_name.split('_')[0]  # 提取姓名部分
-                if name_part.lower().startswith(current_text.lower()):
-                    filtered_names.append(registered_name)
+        # 解析"姓名_身份证号"格式
+        if '_' in person_id:
+            parts = person_id.split('_', 1)  # 最多分割1次，保留身份证号中的下划线
+            if len(parts) >= 2:
+                name = parts[0]
+                id_number = parts[1]
+                # 填充姓名和身份证号
+                self.entry_name.delete(0, tk.END)
+                self.entry_name.insert(0, name)
+                self.entry_id.delete(0, tk.END)
+                self.entry_id.insert(0, id_number)
             else:
-                # 兼容旧格式
-                if registered_name.lower().startswith(current_text.lower()):
-                    filtered_names.append(registered_name)
-        
-        if filtered_names:
-            self.show_batch_autocomplete(idx, filtered_names, autocomplete_listboxes)
+                # 如果格式不正确，只填充姓名
+                self.entry_name.delete(0, tk.END)
+                self.entry_name.insert(0, person_id)
         else:
-            self.hide_batch_autocomplete(idx, autocomplete_listboxes)
-    
-    def on_batch_name_keypress(self, event, idx, autocomplete_listboxes):
-        """处理批量保存对话框中的按键事件"""
-        listbox = autocomplete_listboxes[idx]
-        
-        if not listbox.winfo_viewable():
-            return
-        
-        if event.keysym == 'Up':
-            self.navigate_batch_autocomplete(idx, -1, autocomplete_listboxes)
-            return 'break'
-        elif event.keysym == 'Down':
-            self.navigate_batch_autocomplete(idx, 1, autocomplete_listboxes)
-            return 'break'
-        elif event.keysym == 'Return':
-            if listbox.curselection():
-                self.select_batch_autocomplete(event, idx, None, autocomplete_listboxes)
-                return 'break'
-        elif event.keysym == 'Escape':
-            self.hide_batch_autocomplete(idx, autocomplete_listboxes)
-            return 'break'
-    
-    def on_batch_name_focus(self, event, idx, name_entries, autocomplete_listboxes):
-        """处理批量保存对话框中的焦点事件"""
-        current_text = name_entries[idx].get().strip()
-        if current_text:
-            self.on_batch_name_input(event, idx, name_entries, autocomplete_listboxes)
-    
-    def show_batch_autocomplete(self, idx, filtered_names, autocomplete_listboxes):
-        """显示批量保存对话框中的自动完成列表"""
-        listbox = autocomplete_listboxes[idx]
-        
-        if not filtered_names:
-            return
-        
-        # 清空并填充列表
-        listbox.delete(0, tk.END)
-        for name in filtered_names:
-            listbox.insert(tk.END, name)
-        
-        # 显示下拉列表
-        if not listbox.winfo_viewable():
-            listbox.pack(fill=tk.X, pady=(2, 0))
-        
-        # 选中第一项
-        if listbox.size() > 0:
-            listbox.selection_set(0)
-    
-    def hide_batch_autocomplete(self, idx, autocomplete_listboxes):
-        """隐藏批量保存对话框中的自动完成列表"""
-        listbox = autocomplete_listboxes[idx]
-        if listbox.winfo_viewable():
-            listbox.pack_forget()
-    
-    def navigate_batch_autocomplete(self, idx, direction, autocomplete_listboxes):
-        """在批量保存对话框的自动完成列表中导航"""
-        listbox = autocomplete_listboxes[idx]
-        
-        if not listbox.winfo_viewable():
-            return
-        
-        current_selection = listbox.curselection()
-        if not current_selection:
-            listbox.selection_set(0)
-            return
-        
-        current_index = current_selection[0]
-        new_index = current_index + direction
-        
-        # 循环选择
-        if new_index < 0:
-            new_index = listbox.size() - 1
-        elif new_index >= listbox.size():
-            new_index = 0
-        
-        listbox.selection_clear(0, tk.END)
-        listbox.selection_set(new_index)
-        listbox.see(new_index)
-    
-    def select_batch_autocomplete(self, event, idx, name_entries, autocomplete_listboxes):
-        """选择批量保存对话框中的自动完成项"""
-        listbox = autocomplete_listboxes[idx]
-        
-        if not listbox.winfo_viewable():
-            return
-        
-        selection = listbox.curselection()
-        if selection:
-            selected_name = listbox.get(selection[0])
-            
-            # 获取对应的输入框
-            if name_entries:
-                name_entry = name_entries[idx]
-                # 获取身份证号输入框（需要从对话框的引用中获取）
-                dialog = name_entry.master.master.master  # 获取对话框引用
-                id_entries = getattr(dialog, 'id_entries', [])
-                
-                # 解析"姓名_身份证号"格式
-                if '_' in selected_name:
-                    parts = selected_name.split('_', 1)  # 最多分割1次，保留身份证号中的下划线
-                    if len(parts) >= 2:
-                        name = parts[0]
-                        id_number = parts[1]
-                        # 填充姓名和身份证号
-                        name_entry.delete(0, tk.END)
-                        name_entry.insert(0, name)
-                        if idx < len(id_entries):
-                            id_entries[idx].delete(0, tk.END)
-                            id_entries[idx].insert(0, id_number)
-                    else:
-                        # 如果格式不正确，只填充姓名
-                        name_entry.delete(0, tk.END)
-                        name_entry.insert(0, selected_name)
-                else:
-                    # 兼容旧格式，只填充姓名
-                    name_entry.delete(0, tk.END)
-                    name_entry.insert(0, selected_name)
-            
-            self.hide_batch_autocomplete(idx, autocomplete_listboxes)
-            # 将焦点设置到身份证号输入框
-            if name_entries and idx < len(id_entries):
-                id_entries[idx].focus_set()
+            # 兼容旧格式，只填充姓名
+            self.entry_name.delete(0, tk.END)
+            self.entry_name.insert(0, person_id)
     
     def run(self):
         """运行程序"""
