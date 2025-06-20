@@ -1105,7 +1105,7 @@ class TransparentFaceRecognizer:
                     known = True 
                     
                     # 记录识别结果
-                    logging.info(f"识别到已知人脸: {name} (距离: {min_dist:.3f})")
+                    # logging.info(f"识别到已知人脸: {name} (距离: {min_dist:.3f})")
                     
                     if name not in self.shown_faces  and self.show_popup: 
                         self.root.after(100,  lambda n=name, i=idx: self.show_face_info(n,  i))
