@@ -894,3 +894,36 @@ class FaceDatabaseManager:
         """关闭数据库连接"""
         # SQLite会自动管理连接，这里主要是清理资源
         logging.info("人脸数据库管理器已关闭")
+    
+    def set_important_status_by_real_id_card(self, real_id_card: str, is_important: bool) -> int:
+        """
+        根据真实身份证号批量设置所有同身份证号人员的重点关注状态
+        Args:
+            real_id_card: 真实身份证号
+            is_important: 是否为重点关注
+        Returns:
+            受影响的人员数量
+        """
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                cursor.execute('''
+                    UPDATE persons 
+                    SET is_important = ?, updated_time = CURRENT_TIMESTAMP
+                    WHERE real_id_card = ?
+                ''', (is_important, real_id_card))
+                conn.commit()
+                affected = cursor.rowcount
+                if affected > 0:
+                    status = "重点关注" if is_important else "普通人员"
+                    logging.info(f"批量设置人员重点关注状态成功: real_id_card {real_id_card} -> {status}，共{affected}人")
+                else:
+                    logging.warning(f"未找到real_id_card为{real_id_card}的人员，批量设置失败")
+                return affected
+            except Exception as e:
+                logging.error(f"批量设置人员重点关注状态失败: {str(e)}")
+                conn.rollback()
+                return 0
+            finally:
+                conn.close()

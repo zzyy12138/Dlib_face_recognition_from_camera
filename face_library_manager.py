@@ -164,7 +164,7 @@ class FaceLibraryManager:
         self.root.bind('<Escape>', lambda e: self.close_window())
     
     def load_person_data(self):
-        """加载人员数据到列表"""
+        """加载人员数据到列表，按real_id_card去重"""
         try:
             # 清空现有数据
             for item in self.tree.get_children():
@@ -180,24 +180,27 @@ class FaceLibraryManager:
                 ORDER BY created_time DESC
             ''')
             
+            # 按real_id_card去重，只保留最新一条
+            unique_persons = {}
             for row in cursor.fetchall():
                 person_id, name, id_card, is_temp, is_important, created_time, real_name, real_id_card = row
-                
+                key = real_id_card if real_id_card else id_card
+                if key and key not in unique_persons:
+                    unique_persons[key] = row
+                elif not key:
+                    # 没有身份证号的也显示
+                    unique_persons[person_id] = row
+            
+            for row in unique_persons.values():
+                person_id, name, id_card, is_temp, is_important, created_time, real_name, real_id_card = row
                 # 确定显示名称
-                display_name = name
-                if real_name:
-                    display_name = real_name
-                
+                display_name = real_name if real_name else name
                 # 确定身份证号
-                display_id = id_card
-                if real_id_card:
-                    display_id = real_id_card
-                
+                display_id = real_id_card if real_id_card else id_card
                 # 确定类型
                 person_type = "临时" if is_temp else "真实"
                 if is_important:
-                    person_type += " ⭐"  # 添加星号标记重点关注人员
-                
+                    person_type += " ⭐"
                 # 格式化时间
                 if created_time:
                     try:
@@ -207,19 +210,14 @@ class FaceLibraryManager:
                         formatted_time = created_time
                 else:
                     formatted_time = "未知"
-                
                 self.tree.insert('', 'end', values=(person_id, display_name, display_id, person_type, formatted_time))
-            
             conn.close()
-            
             # 更新统计信息
             stats = self.db_manager.get_statistics()
             important_count = len(self.db_manager.get_important_persons())
             status_text = f"总人员: {stats['total_persons']} | 真实身份: {stats['real_persons']} | 临时身份: {stats['temp_persons']} | 重点关注: {important_count}"
             self.status_label.config(text=status_text)
-            
             logging.info(f"已加载 {stats['total_persons']} 个人员数据")
-            
         except Exception as e:
             logging.error(f"加载人员数据失败: {str(e)}")
             messagebox.showerror("错误", f"加载人员数据失败:\n{str(e)}")
@@ -311,37 +309,37 @@ class FaceLibraryManager:
                 messagebox.showerror("错误", f"删除失败: {str(e)}")
     
     def toggle_important_status(self):
-        """切换选中人员的重点关注状态"""
+        """切换选中人员的重点关注状态，按real_id_card批量设置"""
         selection = self.tree.selection()
         if not selection:
             messagebox.showwarning("警告", "请先选择要设置的人员")
             return
-        
         person_id = self.tree.item(selection[0])['values'][0]
         person_name = self.tree.item(selection[0])['values'][1]
-        
-        # 获取当前重点关注状态
+        display_id = self.tree.item(selection[0])['values'][2]
+        # 获取当前人员信息
         person_info = self.db_manager.get_person_by_id(person_id)
         if not person_info:
             messagebox.showerror("错误", "获取人员信息失败")
             return
-        
+        real_id_card = person_info['real_id_card'] or person_info['id_card']
+        if not real_id_card:
+            messagebox.showerror("错误", "该人员无身份证号，无法批量设置重点关注")
+            return
         current_status = person_info['is_important']
         new_status = not current_status
-        
-        # 确认操作
         action = "设置为重点关注" if new_status else "取消重点关注"
-        result = messagebox.askyesno("确认操作", f"确定要{action}人员 '{person_name}' 吗？")
-        
+        result = messagebox.askyesno("确认操作", f"确定要{action}所有身份证号为 '{real_id_card}' 的人员吗？")
         if result:
             try:
-                if self.db_manager.set_important_status(person_id, new_status):
+                affected = self.db_manager.set_important_status_by_real_id_card(real_id_card, new_status)
+                if affected > 0:
                     status_text = "重点关注 ⭐" if new_status else "普通人员"
-                    messagebox.showinfo("成功", f"已{action}人员 '{person_name}'\n当前状态: {status_text}")
-                    self.load_person_data()  # 重新加载数据
-                    self.on_person_select(None)  # 刷新详细信息显示
+                    messagebox.showinfo("成功", f"已{action}身份证号为 '{real_id_card}' 的所有人员\n当前状态: {status_text}")
+                    self.load_person_data()
+                    self.on_person_select(None)
                 else:
-                    messagebox.showerror("错误", f"{action}失败")
+                    messagebox.showerror("错误", f"{action}失败，无匹配人员")
             except Exception as e:
                 messagebox.showerror("错误", f"{action}失败: {str(e)}")
     

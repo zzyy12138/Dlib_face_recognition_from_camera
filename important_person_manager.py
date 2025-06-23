@@ -18,8 +18,17 @@ def main():
     def refresh_list():
         for item in tree.get_children():
             tree.delete(item)
+        # 获取所有重点关注人员，按real_id_card去重，只保留最新一条
         important_persons = db_manager.get_important_persons()
+        unique_persons = {}
         for person in important_persons:
+            key = person.get('real_id_card') or person.get('id_card')
+            if key and key not in unique_persons:
+                unique_persons[key] = person
+            elif not key:
+                # 没有身份证号的也显示
+                unique_persons[person['id']] = person
+        for person in unique_persons.values():
             display_name = person.get('real_name') or person['name']
             display_id = person.get('real_id_card') or person.get('id_card') or '无'
             person_type = "临时" if person['is_temp'] else "真实"
@@ -42,15 +51,25 @@ def main():
         selected_item = tree.item(selection[0])
         person_id = selected_item['values'][0]
         person_name = selected_item['values'][1]
-        result = tk.messagebox.askyesno("确认操作", f"确定要取消人员 '{person_name}' 的重点关注状态吗？", parent=root)
+        display_id = selected_item['values'][2]
+        # 获取当前人员信息
+        person_info = db_manager.get_person_by_id(person_id)
+        if not person_info:
+            tk.messagebox.showerror("错误", "获取人员信息失败", parent=root)
+            return
+        real_id_card = person_info.get('real_id_card') or person_info.get('id_card')
+        if not real_id_card:
+            tk.messagebox.showerror("错误", "该人员无身份证号，无法批量取消重点关注", parent=root)
+            return
+        result = tk.messagebox.askyesno("确认操作", f"确定要取消所有身份证号为 '{real_id_card}' 的人员的重点关注状态吗？", parent=root)
         if result:
-            success = db_manager.set_important_status(person_id, False)
-            if success:
-                logging.info(f"已在数据库中取消 {person_name} (ID: {person_id}) 的重点关注状态。")
+            affected = db_manager.set_important_status_by_real_id_card(real_id_card, False)
+            if affected > 0:
+                logging.info(f"已取消身份证号为{real_id_card}的所有人员的重点关注状态，共{affected}人。")
                 refresh_list()
-                tk.messagebox.showinfo("成功", f"已取消 '{person_name}' 的重点关注状态。", parent=root)
+                tk.messagebox.showinfo("成功", f"已取消身份证号为 '{real_id_card}' 的所有人员的重点关注状态。", parent=root)
             else:
-                tk.messagebox.showerror("数据库错误", "更新数据库失败，无法取消重点关注状态。", parent=root)
+                tk.messagebox.showerror("数据库错误", f"取消失败，无匹配人员。", parent=root)
 
     columns = ('ID', '姓名', '身份证号', '类型', '创建时间')
     tree = ttk.Treeview(root, columns=columns, show='headings', height=15)
