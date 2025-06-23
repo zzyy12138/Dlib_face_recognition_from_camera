@@ -7,6 +7,7 @@
 4. 系统托盘图标控制 
 5. 智能管理新面孔弹窗，避免过多弹窗 
 6. 自动API调用获取真实身份信息
+7. 使用SQLite数据库存储人脸数据
 """
  
 import dlib 
@@ -31,6 +32,11 @@ import threading
 import csv 
 import base64
 import json
+import io
+import sqlite3
+
+# 导入数据库管理器
+from face_database_manager import FaceDatabaseManager
 
 # 尝试导入requests库，如果失败则禁用API功能
 try:
@@ -88,42 +94,46 @@ face_reco_model = dlib.face_recognition_model_v1("data/data_dlib/dlib_face_recog
  
 class TransparentFaceRecognizer:
     def __init__(self):
-        # 人脸数据库相关 
-        self.face_feature_known_list  = []
-        self.face_name_known_list  = []
-        self.face_image_path_list  = []
+        # 初始化数据库管理器
+        self.db_manager = FaceDatabaseManager()
+        
+        # 人脸数据库相关 - 从数据库加载
+        self.face_feature_known_list = []
+        self.face_name_known_list = []
+        self.face_image_data_list = []  # 存储图像数据而不是路径
+        self.real_name_known_list = []  # 存储真实姓名
         
         # 当前帧数据 
-        self.current_frame_face_feature_list  = []
-        self.current_frame_face_cnt  = 0 
-        self.current_frame_face_name_list  = []
-        self.current_frame_face_position_list  = []
-        self.current_frame_face_known_list  = []
+        self.current_frame_face_feature_list = []
+        self.current_frame_face_cnt = 0 
+        self.current_frame_face_name_list = []
+        self.current_frame_face_position_list = []
+        self.current_frame_face_known_list = []
         
         # 性能统计 
-        self.fps_show  = 0 
-        self.frame_cnt  = 0 
-        self.start_time  = time.time() 
+        self.fps_show = 0 
+        self.frame_cnt = 0 
+        self.start_time = time.time() 
         
         # 屏幕捕获 
-        self.sct  = mss.mss() 
-        self.screen_width  = pyautogui.size().width  
-        self.screen_height  = pyautogui.size().height  
-        self.monitor  = {"top": 0, "left": 0, "width": self.screen_width,  "height": self.screen_height} 
+        self.sct = mss.mss() 
+        self.screen_width = pyautogui.size().width  
+        self.screen_height = pyautogui.size().height  
+        self.monitor = {"top": 0, "left": 0, "width": self.screen_width, "height": self.screen_height} 
         
         # 界面相关 
-        self.font_chinese  = ImageFont.truetype("simsun.ttc",  30)
-        self.root  = tk.Tk()
-        self.root.attributes("-alpha",  0.7)
-        self.root.attributes("-transparentcolor",  "white")
-        self.root.attributes("-fullscreen",  True)
-        self.root.attributes("-topmost",  True)
+        self.font_chinese = ImageFont.truetype("simsun.ttc", 30)
+        self.root = tk.Tk()
+        self.root.attributes("-alpha", 0.7)
+        self.root.attributes("-transparentcolor", "white")
+        self.root.attributes("-fullscreen", True)
+        self.root.attributes("-topmost", True)
         self.root.overrideredirect(True) 
-        self.canvas  = Canvas(self.root,  bg='white', highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH,  expand=True)
+        self.canvas = Canvas(self.root, bg='white', highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
         
         # 识别阈值设置
-        self.recognition_threshold = 0.4  # 默认识别阈值
+        self.recognition_threshold = 0.5  # 默认识别阈值
         
         # 根据GPU可用性自动调整设置
         if gpu_available:
@@ -143,15 +153,15 @@ class TransparentFaceRecognizer:
         self.show_status_display = True  # 是否显示左上角状态信息
         
         # 新面孔管理 - 增强弹窗控制
-        self.last_new_face_time  = 0 
-        self.new_face_cooldown  = 5  # 新面孔检测冷却时间(秒)
-        self.current_new_face  = None  # 当前正在处理的新面孔 
-        self.is_processing_new_face  = False  # 是否正在处理新面孔 
-        self.new_face_popup_window  = None  # 当前新面孔弹窗窗口对象
-        self.shown_faces  = set()  # 已显示的面孔 
-        self.show_popup  = False  # 是否显示弹窗 - 默认关闭
-        self.auto_add_new_faces  = False  # 是否自动识别添加新面孔 - 默认关闭
-        self.processed_features  = set()  # 已处理的特征集合
+        self.last_new_face_time = 0 
+        self.new_face_cooldown = 5  # 新面孔检测冷却时间(秒)
+        self.current_new_face = None  # 当前正在处理的新面孔 
+        self.is_processing_new_face = False  # 是否正在处理新面孔 
+        self.new_face_popup_window = None  # 当前新面孔弹窗窗口对象
+        self.shown_faces = set()  # 已显示的面孔 
+        self.show_popup = False  # 是否显示弹窗 - 默认关闭
+        self.auto_add_new_faces = False  # 是否自动识别添加新面孔 - 默认关闭
+        self.processed_features = set()  # 已处理的特征集合
         
         # API相关配置
         self.api_enabled = REQUESTS_AVAILABLE  # 是否启用API调用
@@ -239,30 +249,22 @@ class TransparentFaceRecognizer:
             self.toggle_status_display
         )
         
-        self.toggle_api_item = pystray.MenuItem(
-            lambda item: f"{'关闭' if self.api_enabled else '开启'}API调用",
-            self.toggle_api_enabled
-        )
-        
-        self.manual_add_item = pystray.MenuItem(
-            "手动添加人脸",
-            self.manual_add_face
-        )
-        
-        self.manual_cleanup_item = pystray.MenuItem(
-            "清理临时文件",
-            self.manual_cleanup_temp_files
-        )
+        # 删除API调用相关菜单项
+        # self.toggle_api_item = pystray.MenuItem(
+        #     lambda item: f"{'关闭' if self.api_enabled else '开启'}API调用",
+        #     self.toggle_api_enabled
+        # )
         
         menu = pystray.Menu(
             self.toggle_popup_item, 
             self.toggle_auto_add_item,
             self.threshold_item,
             self.toggle_status_item,
-            self.toggle_api_item,
+            # self.toggle_api_item,  # 删除API调用菜单项
             pystray.MenuItem('手动添加人脸', self.manual_add_face),
-            pystray.MenuItem('打开人脸数据文件夹', self.open_faces_folder),
-            pystray.MenuItem('清理临时文件', self.manual_cleanup_temp_files),
+            pystray.MenuItem('人脸库管理器', self.open_faces_folder),
+            pystray.MenuItem('清理所有临时身份', self.clear_all_temp_identities),
+            pystray.MenuItem('清空数据库', self.clear_database),
             pystray.MenuItem('退出', self.quit_program) 
         )
         
@@ -474,116 +476,68 @@ class TransparentFaceRecognizer:
             temp_face = self.temp_faces[feature_str]
             real_name = api_result['name']
             real_id_card = api_result['id_card']
-            
-            # 删除临时文件夹和文件
-            temp_folder_path = temp_face['folder_path']
-            if os.path.exists(temp_folder_path):
-                try:
-                    # 删除临时文件夹中的所有文件
-                    for file in os.listdir(temp_folder_path):
-                        file_path = os.path.join(temp_folder_path, file)
-                        if os.path.isfile(file_path):
-                            os.remove(file_path)
-                            logging.debug(f"已删除临时文件: {file_path}")
-                    
-                    # 删除临时文件夹
-                    os.rmdir(temp_folder_path)
-                    logging.info(f"已删除临时文件夹: {temp_folder_path}")
-                except Exception as e:
-                    logging.warning(f"删除临时文件夹失败: {str(e)}")
+            person_id = temp_face['person_id']
             
             # 检查是否已存在相同身份
-            existing_person_name = f"{real_name}_{real_id_card}"
-            existing_folder_name = f"person_{real_name}_{real_id_card}"
-            existing_folder_path = f"data/data_faces_from_camera/{existing_folder_name}"
+            existing_person = self.db_manager.get_person_by_name_id(real_name, real_id_card)
             
-            # 检查是否已存在相同身份
-            if existing_person_name in self.face_name_known_list:
-                # 身份已存在，在现有文件夹中新增图片
-                logging.info(f"发现相同身份 {real_name} - {real_id_card}，在现有文件夹中新增图片")
+            if existing_person:
+                # 身份已存在，更新现有记录
+                logging.info(f"发现相同身份 {real_name} - {real_id_card}，更新现有记录")
                 
-                # 确保文件夹存在
-                os.makedirs(existing_folder_path, exist_ok=True)
+                # 删除临时人员记录
+                self.db_manager.delete_person(person_id)
                 
-                # 找到下一个可用的图片编号
-                img_index = 1
-                while os.path.exists(os.path.join(existing_folder_path, f"img_face_{img_index}.jpg")):
-                    img_index += 1
-                
-                img_filename = os.path.join(existing_folder_path, f"img_face_{img_index}.jpg")
-                
-                # 保存图像
-                face_img = temp_face['face_img']
-                face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
-                success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
-                if success:
-                    with open(img_filename, 'wb') as f:
-                        f.write(encoded_img.tobytes())
-                    logging.info(f"已在现有文件夹中新增图片: {img_filename}")
-                else:
-                    logging.error("保存图像失败")
-                    return False
-                
-                # 从内存数据库中移除临时身份
+                # 更新内存数据库
                 temp_person_name = f"{temp_face['temp_name']}_{temp_face['temp_id']}"
                 if temp_person_name in self.face_name_known_list:
                     temp_index = self.face_name_known_list.index(temp_person_name)
                     self.face_name_known_list.pop(temp_index)
                     self.face_feature_known_list.pop(temp_index)
-                    self.face_image_path_list.pop(temp_index)
+                    self.face_image_data_list.pop(temp_index)
+                    self.real_name_known_list.pop(temp_index)  # 同时清理真实姓名列表
                     logging.debug(f"已从内存数据库中移除临时身份: {temp_person_name}")
                 
-                # 更新内存中的特征（使用新图片的特征）
-                existing_index = self.face_name_known_list.index(existing_person_name)
-                # 可以选择更新特征或保持原有特征，这里选择更新为新图片的特征
-                self.face_feature_known_list[existing_index] = temp_face['feature']
-                logging.info(f"已更新 {existing_person_name} 的特征")
+                # 更新现有人员的特征
+                self.db_manager.add_face_feature(existing_person['id'], temp_face['feature'])
+                logging.info(f"已更新 {real_name} 的特征")
                 
             else:
-                # 新身份，创建新文件夹
-                logging.info(f"发现新身份 {real_name} - {real_id_card}，创建新文件夹")
+                # 新身份，更新临时记录为真实身份
+                logging.info(f"发现新身份 {real_name} - {real_id_card}，更新为真实身份")
                 
-                # 创建新的文件夹名称
-                folder_name = f"person_{real_name}_{real_id_card}"
-                folder_path = f"data/data_faces_from_camera/{folder_name}"
-                
-                # 确保文件夹存在
-                os.makedirs(folder_path, exist_ok=True)
-                
-                # 保存图像
-                img_filename = os.path.join(folder_path, "img_face_1.jpg")
-                
-                # 保存图像
-                face_img = temp_face['face_img']
-                face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
-                success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
-                if success:
-                    with open(img_filename, 'wb') as f:
-                        f.write(encoded_img.tobytes())
-                else:
-                    logging.error("保存图像失败")
+                # 更新数据库中的身份信息
+                success = self.db_manager.update_person_real_info(person_id, real_name, real_id_card)
+                if not success:
+                    logging.error("更新数据库身份信息失败")
                     return False
                 
-                # 从内存数据库中移除临时身份
+                # 更新内存数据库
                 temp_person_name = f"{temp_face['temp_name']}_{temp_face['temp_id']}"
+                real_person_name = f"{real_name}_{real_id_card}"
+                
                 if temp_person_name in self.face_name_known_list:
                     temp_index = self.face_name_known_list.index(temp_person_name)
-                    self.face_name_known_list.pop(temp_index)
-                    self.face_feature_known_list.pop(temp_index)
-                    self.face_image_path_list.pop(temp_index)
-                    logging.debug(f"已从内存数据库中移除临时身份: {temp_person_name}")
-                
-                # 更新内存中的数据库
-                self.face_name_known_list.append(existing_person_name)
-                self.face_feature_known_list.append(temp_face['feature'])
-                self.face_image_path_list.append(img_filename)
-                
-                # 添加真实身份到CSV文件（增量更新）
-                logging.info("正在添加真实身份到特征文件...")
-                if self.update_face_database_csv(existing_person_name, temp_face['feature']):
-                    logging.info("特征文件更新成功")
+                    self.face_name_known_list[temp_index] = real_person_name
+                    # 更新真实姓名列表
+                    if temp_index < len(self.real_name_known_list):
+                        self.real_name_known_list[temp_index] = real_name
+                    else:
+                        self.real_name_known_list.append(real_name)
+                    logging.debug(f"已更新内存数据库中的身份: {temp_person_name} -> {real_person_name}")
                 else:
-                    logging.warning("特征文件更新失败")
+                    # 如果临时身份不在内存数据库中，直接添加真实身份
+                    self.face_name_known_list.append(real_person_name)
+                    self.face_feature_known_list.append(temp_face['feature'])
+                    self.real_name_known_list.append(real_name)  # 添加真实姓名
+                    # 获取图像数据
+                    image_data = self.db_manager.get_face_image(person_id)
+                    if image_data:
+                        self.face_image_data_list.append(image_data)
+                    else:
+                        # 如果没有图像数据，添加一个占位符
+                        self.face_image_data_list.append(None)
+                    logging.debug(f"已添加真实身份到内存数据库: {real_person_name}")
             
             # 从临时存储中移除
             del self.temp_faces[feature_str]
@@ -598,44 +552,19 @@ class TransparentFaceRecognizer:
     def cleanup_temp_files(self, max_age_hours=24):
         """清理过期的临时文件"""
         try:
-            current_time = time.time()
-            max_age_seconds = max_age_hours * 3600
+            # 使用数据库管理器清理过期的临时人员
+            deleted_count = self.db_manager.delete_temp_persons(max_age_hours)
             
-            # 清理过期的临时人脸
-            expired_faces = []
-            for feature_str, temp_face in self.temp_faces.items():
-                if current_time - temp_face['detect_time'] > max_age_seconds:
-                    expired_faces.append(feature_str)
-            
-            for feature_str in expired_faces:
-                temp_face = self.temp_faces[feature_str]
-                temp_folder_path = temp_face['folder_path']
+            if deleted_count > 0:
+                logging.info(f"已清理 {deleted_count} 个过期的临时人员")
                 
-                # 删除临时文件夹
-                if os.path.exists(temp_folder_path):
-                    try:
-                        for file in os.listdir(temp_folder_path):
-                            file_path = os.path.join(temp_folder_path, file)
-                            if os.path.isfile(file_path):
-                                os.remove(file_path)
-                        os.rmdir(temp_folder_path)
-                        logging.info(f"已清理过期临时文件夹: {temp_folder_path}")
-                    except Exception as e:
-                        logging.warning(f"清理临时文件夹失败: {str(e)}")
-                
-                # 从内存中移除
-                temp_person_name = f"{temp_face['temp_name']}_{temp_face['temp_id']}"
-                if temp_person_name in self.face_name_known_list:
-                    temp_index = self.face_name_known_list.index(temp_person_name)
-                    self.face_name_known_list.pop(temp_index)
-                    self.face_feature_known_list.pop(temp_index)
-                    self.face_image_path_list.pop(temp_index)
-                
-                del self.temp_faces[feature_str]
-                self.processed_features.discard(feature_str)
-            
-            if expired_faces:
-                logging.info(f"已清理 {len(expired_faces)} 个过期的临时人脸")
+                # 重新加载数据库以更新内存中的数据
+                self.face_name_known_list.clear()
+                self.face_feature_known_list.clear()
+                self.face_image_data_list.clear()
+                self.real_name_known_list.clear()  # 清空真实姓名列表
+                self.processed_features.clear()
+                self.get_face_database()
                 
         except Exception as e:
             logging.error(f"清理临时文件时出错: {str(e)}")
@@ -716,44 +645,314 @@ class TransparentFaceRecognizer:
         threading.Thread(target=run_face_collector, daemon=True).start()
  
     def open_faces_folder(self, icon=None, item=None):
-        """打开存放人脸图像的文件夹"""
-        folder_path = "data/data_faces_from_camera"
+        """打开人脸库管理器 - 显示数据库内容并预览图片"""
         try:
-            abs_path = os.path.abspath(folder_path)
-            if not os.path.exists(abs_path):
-                os.makedirs(abs_path)
-                logging.info(f"文件夹不存在，已创建: {abs_path}")
+            def show_face_library():
+                # 创建主窗口
+                main_window = Toplevel(self.root)
+                main_window.title("人脸库管理器")
+                main_window.geometry("800x600")
+                main_window.attributes("-topmost", True)
+                main_window.grab_set()
+                
+                # 主框架
+                main_frame = tk.Frame(main_window)
+                main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                
+                # 标题
+                title_label = Label(main_frame, text="人脸库管理器", font=('Arial', 16, 'bold'), fg='blue')
+                title_label.pack(pady=(0, 10))
+                
+                # 创建左右分栏
+                paned_window = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
+                paned_window.pack(fill=tk.BOTH, expand=True)
+                
+                # 左侧：人员列表
+                left_frame = ttk.Frame(paned_window)
+                paned_window.add(left_frame, weight=1)
+                
+                # 人员列表标题
+                list_title = Label(left_frame, text="人员列表", font=('Arial', 12, 'bold'))
+                list_title.pack(pady=(0, 5))
+                
+                # 创建Treeview显示人员列表
+                columns = ('ID', '姓名', '身份证号', '类型', '创建时间')
+                tree = ttk.Treeview(left_frame, columns=columns, show='headings', height=15)
+                
+                # 设置列标题
+                for col in columns:
+                    tree.heading(col, text=col)
+                    tree.column(col, width=100)
+                
+                # 添加滚动条
+                scrollbar = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=tree.yview)
+                tree.configure(yscrollcommand=scrollbar.set)
+                
+                tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                
+                # 右侧：详细信息
+                right_frame = ttk.Frame(paned_window)
+                paned_window.add(right_frame, weight=1)
+                
+                # 详细信息标题
+                detail_title = Label(right_frame, text="详细信息", font=('Arial', 12, 'bold'))
+                detail_title.pack(pady=(0, 5))
+                
+                # 详细信息显示区域
+                detail_frame = ttk.Frame(right_frame)
+                detail_frame.pack(fill=tk.BOTH, expand=True)
+                
+                # 图片显示区域
+                image_frame = ttk.LabelFrame(detail_frame, text="人脸图片")
+                image_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+                
+                image_label = Label(image_frame, text="请选择人员查看图片", font=('Arial', 10))
+                image_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                
+                # 信息显示区域
+                info_frame = ttk.LabelFrame(detail_frame, text="人员信息")
+                info_frame.pack(fill=tk.X, pady=(0, 10))
+                
+                info_text = tk.Text(info_frame, height=8, wrap=tk.WORD, font=('Arial', 9))
+                info_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+                
+                # 按钮区域
+                button_frame = ttk.Frame(detail_frame)
+                button_frame.pack(fill=tk.X, pady=(0, 10))
+                
+                def load_person_data():
+                    """加载人员数据到列表"""
+                    try:
+                        # 清空现有数据
+                        for item in tree.get_children():
+                            tree.delete(item)
+                        
+                        # 从数据库获取所有人员
+                        conn = sqlite3.connect(self.db_manager.db_path)
+                        cursor = conn.cursor()
+                        
+                        cursor.execute('''
+                            SELECT id, name, id_card, is_temp, created_time, real_name, real_id_card
+                            FROM persons
+                            ORDER BY created_time DESC
+                        ''')
+                        
+                        for row in cursor.fetchall():
+                            person_id, name, id_card, is_temp, created_time, real_name, real_id_card = row
+                            
+                            # 确定显示名称
+                            display_name = name
+                            if real_name:
+                                display_name = real_name
+                            
+                            # 确定身份证号
+                            display_id = id_card
+                            if real_id_card:
+                                display_id = real_id_card
+                            
+                            # 确定类型
+                            person_type = "临时" if is_temp else "真实"
+                            
+                            # 格式化时间
+                            if created_time:
+                                try:
+                                    dt = datetime.fromisoformat(created_time.replace('Z', '+00:00'))
+                                    formatted_time = dt.strftime('%Y-%m-%d %H:%M')
+                                except:
+                                    formatted_time = created_time
+                            else:
+                                formatted_time = "未知"
+                            
+                            tree.insert('', 'end', values=(person_id, display_name, display_id, person_type, formatted_time))
+                        
+                        conn.close()
+                        
+                        # 更新统计信息
+                        stats = self.db_manager.get_statistics()
+                        status_text = f"总人员: {stats['total_persons']} | 真实身份: {stats['real_persons']} | 临时身份: {stats['temp_persons']}"
+                        status_label.config(text=status_text)
+                        
+                    except Exception as e:
+                        logging.error(f"加载人员数据失败: {str(e)}")
+                        import tkinter.messagebox as messagebox
+                        messagebox.showerror("错误", f"加载人员数据失败:\n{str(e)}")
+                
+                def on_person_select(event):
+                    """当选择人员时显示详细信息"""
+                    selection = tree.selection()
+                    if not selection:
+                        return
+                    
+                    try:
+                        # 获取选中的人员ID
+                        person_id = tree.item(selection[0])['values'][0]
+                        
+                        # 获取人员详细信息
+                        person_info = self.db_manager.get_person_by_id(person_id)
+                        if not person_info:
+                            return
+                        
+                        # 显示人员信息
+                        info_text.delete(1.0, tk.END)
+                        info_content = f"""人员ID: {person_info['id']}
+姓名: {person_info['name']}
+身份证号: {person_info['id_card'] or '无'}
+真实姓名: {person_info['real_name'] or '无'}
+真实身份证号: {person_info['real_id_card'] or '无'}
+身份类型: {'临时身份' if person_info['is_temp'] else '真实身份'}
+创建时间: {person_info['created_time']}
+更新时间: {person_info['updated_time']}"""
+                        
+                        info_text.insert(1.0, info_content)
+                        
+                        # 获取并显示人脸图片
+                        image_data = self.db_manager.get_face_image(person_id)
+                        if image_data:
+                            try:
+                                # 将二进制数据转换为PIL图像
+                                pil_img = Image.open(io.BytesIO(image_data))
+                                
+                                # 计算合适的显示尺寸
+                                display_width = 200
+                                display_height = 200
+                                
+                                # 保持宽高比
+                                img_width, img_height = pil_img.size
+                                ratio = min(display_width / img_width, display_height / img_height)
+                                new_width = int(img_width * ratio)
+                                new_height = int(img_height * ratio)
+                                
+                                pil_img = pil_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                                tk_img = ImageTk.PhotoImage(pil_img)
+                                
+                                # 更新图片显示
+                                image_label.config(image=tk_img, text="")
+                                image_label.image = tk_img  # 保持引用
+                                
+                            except Exception as e:
+                                image_label.config(image="", text=f"图片加载失败: {str(e)}")
+                        else:
+                            image_label.config(image="", text="无图片数据")
+                        
+                    except Exception as e:
+                        logging.error(f"显示人员详细信息失败: {str(e)}")
+                        info_text.delete(1.0, tk.END)
+                        info_text.insert(1.0, f"获取详细信息失败: {str(e)}")
+                
+                def delete_selected_person():
+                    """删除选中的人员"""
+                    selection = tree.selection()
+                    if not selection:
+                        import tkinter.messagebox as messagebox
+                        messagebox.showwarning("警告", "请先选择要删除的人员")
+                        return
+                    
+                    person_id = tree.item(selection[0])['values'][0]
+                    person_name = tree.item(selection[0])['values'][1]
+                    
+                    # 确认删除
+                    import tkinter.messagebox as messagebox
+                    result = messagebox.askyesno("确认删除", f"确定要删除人员 '{person_name}' 吗？\n此操作不可恢复！")
+                    
+                    if result:
+                        try:
+                            if self.db_manager.delete_person(person_id):
+                                messagebox.showinfo("成功", f"已删除人员 '{person_name}'")
+                                load_person_data()  # 重新加载数据
+                            else:
+                                messagebox.showerror("错误", "删除失败")
+                        except Exception as e:
+                            messagebox.showerror("错误", f"删除失败: {str(e)}")
+                
+                def refresh_data():
+                    """刷新数据"""
+                    load_person_data()
+                
+                # 绑定选择事件
+                tree.bind('<<TreeviewSelect>>', on_person_select)
+                
+                # 按钮
+                ttk.Button(button_frame, text="刷新", command=refresh_data).pack(side=tk.LEFT, padx=5)
+                ttk.Button(button_frame, text="删除选中", command=delete_selected_person).pack(side=tk.LEFT, padx=5)
+                ttk.Button(button_frame, text="关闭", command=main_window.destroy).pack(side=tk.RIGHT, padx=5)
+                
+                # 状态栏
+                status_frame = ttk.Frame(main_frame)
+                status_frame.pack(fill=tk.X, pady=(10, 0))
+                
+                status_label = Label(status_frame, text="正在加载数据...", font=('Arial', 9))
+                status_label.pack(side=tk.LEFT)
+                
+                # 加载数据
+                load_person_data()
             
-            os.startfile(abs_path)
-            logging.info(f"已请求打开文件夹: {abs_path}")
+            # 在主线程中显示窗口
+            self.root.after(0, show_face_library)
+            
         except Exception as e:
-            logging.error(f"无法打开文件夹 {folder_path}: {e}")
+            logging.error(f"打开人脸库管理器失败: {str(e)}")
             import tkinter.messagebox as messagebox
-            messagebox.showerror("错误", f"无法打开文件夹:\n{os.path.abspath(folder_path)}\n\n错误: {e}")
+            messagebox.showerror("错误", f"打开人脸库管理器失败:\n{str(e)}")
 
-    def manual_cleanup_temp_files(self, icon=None, item=None):
-        """手动清理临时文件"""
+    def clear_all_temp_identities(self, icon=None, item=None):
+        """清理所有临时身份（包括内存中的）"""
         try:
-            logging.info("开始手动清理临时文件...")
-            before_count = len(self.temp_faces)
+            logging.info("开始清理所有临时身份...")
+            
+            # 清理数据库中的临时人员
+            before_count = self.db_manager.get_statistics()['temp_persons']
             self.cleanup_temp_files(max_age_hours=0)  # 清理所有临时文件
-            after_count = len(self.temp_faces)
-            cleaned_count = before_count - after_count
+            after_count = self.db_manager.get_statistics()['temp_persons']
+            db_cleaned_count = before_count - after_count
+            
+            # 清理内存中的临时身份
+            temp_names_to_remove = []
+            for i, name in enumerate(self.face_name_known_list):
+                if name.startswith('unknown') or name.startswith('TEMP'):
+                    temp_names_to_remove.append(i)
+            
+            # 从后往前删除，避免索引变化
+            for i in reversed(temp_names_to_remove):
+                self.face_name_known_list.pop(i)
+                self.face_feature_known_list.pop(i)
+                self.face_image_data_list.pop(i)
+                self.real_name_known_list.pop(i)  # 同时清理真实姓名列表
+            
+            memory_cleaned_count = len(temp_names_to_remove)
+            
+            # 清理临时存储
+            temp_faces_count = len(self.temp_faces)
+            self.temp_faces.clear()
+            
+            # 清理已处理特征集合中的临时特征
+            temp_features_to_remove = []
+            for feature_str in self.processed_features:
+                if 'unknown' in feature_str or 'TEMP' in feature_str:
+                    temp_features_to_remove.append(feature_str)
+            
+            for feature_str in temp_features_to_remove:
+                self.processed_features.discard(feature_str)
+            
+            # 重置临时用户计数器
+            self.temp_user_counter = 1
             
             # 显示清理结果
             import tkinter.messagebox as messagebox
-            if cleaned_count > 0:
-                messagebox.showinfo("清理完成", f"已清理 {cleaned_count} 个临时文件")
-                logging.info(f"手动清理完成，清理了 {cleaned_count} 个临时文件")
+            total_cleaned = db_cleaned_count + memory_cleaned_count + temp_faces_count
+            if total_cleaned > 0:
+                result_msg = f"清理完成！\n\n数据库临时人员: {db_cleaned_count} 个\n内存临时身份: {memory_cleaned_count} 个\n临时存储: {temp_faces_count} 个\n总计: {total_cleaned} 个"
+                messagebox.showinfo("清理完成", result_msg)
+                logging.info(f"清理所有临时身份完成，总计清理了 {total_cleaned} 个临时项目")
             else:
-                messagebox.showinfo("清理完成", "没有需要清理的临时文件")
-                logging.info("手动清理完成，没有需要清理的临时文件")
+                messagebox.showinfo("清理完成", "没有需要清理的临时身份")
+                logging.info("清理所有临时身份完成，没有需要清理的项目")
                 
         except Exception as e:
-            logging.error(f"手动清理临时文件时出错: {str(e)}")
+            logging.error(f"清理所有临时身份时出错: {str(e)}")
             import tkinter.messagebox as messagebox
-            messagebox.showerror("错误", f"清理临时文件时出错:\n{str(e)}")
- 
+            messagebox.showerror("错误", f"清理临时身份时出错:\n{str(e)}")
+
     def show_loading_progress(self, message, task_function):
         """显示加载进度条（直接在主窗口上显示）"""
         def show_progress():
@@ -881,17 +1080,14 @@ class TransparentFaceRecognizer:
             # 清空现有数据
             self.face_name_known_list.clear()
             self.face_feature_known_list.clear()
-            self.face_image_path_list.clear()
+            self.face_image_data_list.clear()
+            self.real_name_known_list.clear()  # 清空真实姓名列表
             self.processed_features.clear()
             
             # 重新加载数据库
             self.get_face_database()
             
-            # 重新生成CSV文件
-            if self.regenerate_csv_from_images():
-                logging.info("人脸数据库重新加载成功")
-            else:
-                logging.warning("人脸数据库重新加载失败")
+            logging.info("人脸数据库重新加载成功")
                 
         except Exception as e:
             logging.error(f"重新加载人脸数据库时出错: {str(e)}")
@@ -922,37 +1118,36 @@ class TransparentFaceRecognizer:
         ctypes.windll.user32.SetWindowLongA(hwnd,  -20, style | 0x00000020 | 0x80000)
  
     def get_face_database(self):
-        """从CSV文件加载人脸数据库"""
-        path = "data/features_all.csv"  
-        if os.path.exists(path)  and os.path.getsize(path)  > 0:
-            try:
-                # 添加dtype参数确保第一列作为字符串读取 
-                df = pd.read_csv(path,  header=None, dtype={0: str})
-                if not df.empty:  
-                    for i in range(df.shape[0]):  
-                        name = str(df.iloc[i][0])   # 确保转换为字符串 
-                        features = [float(x) if x != '' else 0.0 for x in df.iloc[i][1:129]]  
-                        feature_str = ','.join(map(str, features))
-                        self.face_name_known_list.append(name)  
-                        self.face_feature_known_list.append(features)  
-                        
-                        # 构建图像路径 - 支持新旧格式
-                        if '_' in name and name.count('_') >= 1:
-                            # 新格式: 姓名_身份证号
-                            folder_name = f"person_{name}"
-                        else:
-                            # 旧格式: 数字编号
-                            folder_name = f"person_{name}"
-                        
-                        self.face_image_path_list.append(f"data/data_faces_from_camera/{folder_name}/img_face_1.jpg")  
-                        self.processed_features.add(feature_str)  
-                    logging.info(f" 已加载 {len(self.face_feature_known_list)}  张人脸")
-                else:
-                    logging.info(" 特征文件为空，没有加载任何人脸")
-            except Exception as e:
-                logging.error(f" 加载人脸数据库时出错: {str(e)}")
-        else:
-            logging.info(" 特征文件不存在或为空，跳过加载")
+        """从SQLite数据库加载人脸数据库"""
+        try:
+            # 从数据库获取所有特征
+            features = self.db_manager.get_face_features()
+            
+            if features:
+                for person_id, feature_vector, person_name, real_name in features:
+                    self.face_name_known_list.append(person_name)
+                    self.face_feature_known_list.append(feature_vector)
+                    self.real_name_known_list.append(real_name)  # 存储真实姓名
+                    
+                    # 获取该人员的图像数据
+                    image_data = self.db_manager.get_face_image(person_id)
+                    self.face_image_data_list.append(image_data)
+                    
+                    # 生成特征字符串用于去重
+                    feature_str = ','.join(map(str, feature_vector))
+                    self.processed_features.add(feature_str)
+                
+                logging.info(f"已从数据库加载 {len(self.face_feature_known_list)} 张人脸")
+            else:
+                logging.info("数据库中没有找到人脸数据")
+                
+        except Exception as e:
+            logging.error(f"从数据库加载人脸数据时出错: {str(e)}")
+            # 如果数据库加载失败，尝试从CSV文件导入
+            logging.info("尝试从CSV文件导入数据到数据库...")
+            if self.db_manager.import_from_csv():
+                # 重新加载
+                self.get_face_database()
 
     def update_face_database_csv(self, person_name, feature):
         """更新人脸数据库CSV文件"""
@@ -1034,27 +1229,31 @@ class TransparentFaceRecognizer:
  
     def show_face_info(self, name, idx):
         """显示已知人脸信息"""
-        if not self.show_popup  or name in self.shown_faces: 
+        # 过滤掉临时身份，不显示unknown1、unknown2等临时身份的弹窗
+        if name.startswith('unknown') or name.startswith('TEMP'):
+            logging.debug(f"跳过临时身份弹窗显示: {name}")
+            return
+            
+        if not self.show_popup or name in self.shown_faces: 
             return 
             
         self.shown_faces.add(name) 
  
         def show():
             popup = Toplevel(self.root) 
-            popup.title(f" 识别到: {name}")
-            popup.attributes("-topmost",  True)
+            popup.title(f"识别到: {name}")
+            popup.attributes("-topmost", True)
             
-            img_path = self.face_image_path_list[idx]  if idx < len(self.face_image_path_list)  else ""
+            # 从数据库获取图像数据
+            image_data = self.face_image_data_list[idx] if idx < len(self.face_image_data_list) else None
             
-            if os.path.exists(img_path): 
+            if image_data: 
                 try:
-                    # 使用imdecode读取图像，避免中文路径问题
-                    img_path_abs = os.path.abspath(img_path)
-                    img_array = np.fromfile(img_path_abs, dtype=np.uint8)
-                    pil_img = Image.open(img_path).resize((200,  200))
+                    # 将二进制数据转换为PIL图像
+                    pil_img = Image.open(io.BytesIO(image_data)).resize((200, 200))
                     tk_img = ImageTk.PhotoImage(pil_img)
                     label_img = Label(popup, image=tk_img)
-                    label_img.image  = tk_img 
+                    label_img.image = tk_img 
                     label_img.pack(pady=10) 
                 except Exception as e:
                     Label(popup, text=f"图片加载失败: {str(e)}").pack(pady=10)
@@ -1067,10 +1266,21 @@ class TransparentFaceRecognizer:
                 name_parts = name.split('_', 1)
                 display_name = name_parts[0]
                 id_number = name_parts[1]
-                info = f"姓名: {display_name}\n身份证号: {id_number}\n识别时间: {time.strftime('%Y-%m-%d  %H:%M:%S')}"
+                
+                # 如果有真实姓名，优先显示真实姓名
+                if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
+                    display_name = self.real_name_known_list[idx]
+                
+                info = f"姓名: {display_name}\n身份证号: {id_number}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
             else:
                 # 旧格式或其他格式
-                info = f"姓名: {name}\n识别时间: {time.strftime('%Y-%m-%d  %H:%M:%S')}"
+                display_name = name
+                
+                # 如果有真实姓名，优先显示真实姓名
+                if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
+                    display_name = self.real_name_known_list[idx]
+                
+                info = f"姓名: {display_name}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
                 
             Label(popup, text=info, font=('Arial', 12)).pack(pady=10)
             
@@ -1079,12 +1289,12 @@ class TransparentFaceRecognizer:
                 popup.destroy() 
                 
             tk.Button(popup, text="关闭", command=close).pack(pady=10)
-            popup.after(5000,  close)
+            popup.after(5000, close)
  
         threading.Thread(target=show).start()
  
     def create_new_face_data(self, img, face_rect, shape, feature):
-        """处理新检测到的人脸 - 直接使用临时身份信息"""
+        """处理新检测到的人脸 - 保存到数据库"""
         # 检查自动发现新面孔功能是否开启
         if not self.auto_add_new_faces:
             logging.debug("自动发现新面孔功能已关闭，跳过")
@@ -1121,51 +1331,45 @@ class TransparentFaceRecognizer:
         # 生成临时身份信息
         temp_name, temp_id = self.generate_temp_identity()
         
-        # 创建临时文件夹并保存图像
-        temp_folder_name = f"person_{temp_name}_{temp_id}"
-        temp_folder_path = f"data/data_faces_from_camera/{temp_folder_name}"
-        os.makedirs(temp_folder_path, exist_ok=True)
-        
-        # 保存临时图像
-        img_filename = os.path.join(temp_folder_path, "img_face_1.jpg")
         try:
+            # 将图像转换为JPEG格式的二进制数据
             face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
             success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
-            if success:
-                with open(img_filename, 'wb') as f:
-                    f.write(encoded_img.tobytes())
-            else:
-                logging.error("保存临时图像失败")
+            if not success:
+                logging.error("图像编码失败")
                 return
+            image_data = encoded_img.tobytes()
+            
+            # 添加到数据库
+            person_id = self.db_manager.add_person(temp_name, temp_id, is_temp=True)
+            self.db_manager.add_face_image(person_id, image_data, 'jpg')
+            self.db_manager.add_face_feature(person_id, feature)
+            
+            # 添加到临时存储
+            self.temp_faces[feature_str] = {
+                'temp_name': temp_name,
+                'temp_id': temp_id,
+                'person_id': person_id,
+                'face_img': face_img,
+                'feature': feature,
+                'detect_time': current_time
+            }
+            
+            # 不添加到内存数据库，避免被识别为已知人脸
+            # temp_person_name = f"{temp_name}_{temp_id}"
+            # self.face_name_known_list.append(temp_person_name)
+            # self.face_feature_known_list.append(feature)
+            # self.face_image_data_list.append(image_data)
+            
+            # 标记为已处理
+            self.processed_features.add(feature_str)
+            self.last_new_face_time = current_time
+            
+            logging.info(f"已创建临时身份: {temp_name} - {temp_id} (数据库ID: {person_id})")
+            
         except Exception as e:
-            logging.error(f"保存临时图像失败: {str(e)}")
+            logging.error(f"保存新面孔到数据库失败: {str(e)}")
             return
-        
-        # 添加到临时存储
-        self.temp_faces[feature_str] = {
-            'temp_name': temp_name,
-            'temp_id': temp_id,
-            'face_img': face_img,
-            'feature': feature,
-            'folder_path': temp_folder_path,
-            'img_filename': img_filename,
-            'detect_time': current_time
-        }
-        
-        # 添加到内存数据库（临时，仅用于显示）
-        temp_person_name = f"{temp_name}_{temp_id}"
-        self.face_name_known_list.append(temp_person_name)
-        self.face_feature_known_list.append(feature)
-        self.face_image_path_list.append(img_filename)
-        
-        # 注意：不更新CSV文件，因为这是临时身份
-        # 只有在API返回真实身份后才会更新特征文件
-        
-        # 标记为已处理
-        self.processed_features.add(feature_str)
-        self.last_new_face_time = current_time
-        
-        logging.info(f"已创建临时身份: {temp_name} - {temp_id}")
         
         # 在新线程中调用API
         def api_call_thread():
@@ -1242,35 +1446,39 @@ class TransparentFaceRecognizer:
             name = "Unknown"
             known = False 
             
-            if self.face_feature_known_list: 
-                # 计算与已知人脸的相似度 
-                distances = [self.return_euclidean_distance(feature, f) for f in self.face_feature_known_list] 
-                min_dist = min(distances)
+            # 使用数据库查找相似人脸
+            match_result = self.db_manager.find_similar_face(feature, self.recognition_threshold)
+            
+            if match_result:
+                # 找到匹配的人脸
+                person_id, distance, person_name, real_name = match_result
                 
-                if min_dist < self.recognition_threshold:  # 识别阈值 
-                    idx = distances.index(min_dist) 
-                    name = self.face_name_known_list[idx] 
-                    known = True 
-                    
-                    # 记录识别结果
-                    # logging.info(f"识别到已知人脸: {name} (距离: {min_dist:.3f})")
-                    
-                    if name not in self.shown_faces  and self.show_popup: 
-                        self.root.after(100,  lambda n=name, i=idx: self.show_face_info(n,  i))
-                else:
-                    # 记录未知人脸
-                    logging.debug(f"检测到未知人脸 (最小距离: {min_dist:.3f}, 阈值: {self.recognition_threshold})")
-                    # 未知人脸，尝试添加到处理 
-                    self.create_new_face_data(img,  rect, shape, feature)
+                # 优先使用real_name，如果没有则使用person_name
+                display_name = real_name if real_name else person_name
+                name = display_name
+                known = True
+                
+                # 记录识别结果
+                # logging.info(f"识别到已知人脸: {name} (距离: {distance:.3f})")
+                
+                # 在内存列表中找到对应的索引（使用person_name查找，因为内存中存储的是person_name）
+                if person_name in self.face_name_known_list:
+                    idx = self.face_name_known_list.index(person_name)
+                    if name not in self.shown_faces and self.show_popup: 
+                        self.root.after(100, lambda n=name, i=idx: self.show_face_info(n, i))
             else:
-                # 没有已知人脸，尝试添加到处理 
-                self.create_new_face_data(img,  rect, shape, feature)
+                # 未找到匹配的人脸，标记为未知
+                name = "Unknown"
+                known = False
+                logging.debug(f"检测到未知人脸")
+                # 未知人脸，尝试添加到处理 
+                self.create_new_face_data(img, rect, shape, feature)
                 
             # 更新当前帧数据 
             self.current_frame_face_feature_list.append(feature) 
-            self.current_frame_face_position_list.append((rect.left(),  rect.top(),  rect.right(),  rect.bottom())) 
+            self.current_frame_face_position_list.append((rect.left(), rect.top(), rect.right(), rect.bottom())) 
             self.current_frame_face_name_list.append(name) 
-            self.current_frame_face_known_list.append(known) 
+            self.current_frame_face_known_list.append(known)
             
         # 绘制结果 
         self.draw_results() 
@@ -1286,15 +1494,32 @@ class TransparentFaceRecognizer:
             
             # 解析显示名称
             display_name = self.current_frame_face_name_list[i]
-            if '_' in display_name and display_name.count('_') >= 1:
-                # 新格式: 姓名_身份证号，只显示姓名
-                name_parts = display_name.split('_', 1)
-                display_name = name_parts[0]
+            
+            # 处理显示名称
+            if self.current_frame_face_known_list[i]:
+                # 已知人脸 - 已经优先使用了real_name
+                if display_name.startswith('unknown') or display_name.startswith('TEMP'):
+                    # 临时身份，显示为未知
+                    display_name = "未知"
+                elif '_' in display_name and display_name.count('_') >= 1:
+                    # 新格式: 姓名_身份证号，只显示姓名
+                    name_parts = display_name.split('_', 1)
+                    display_name = name_parts[0]
+                # 其他情况直接显示原始名称
+            else:
+                # 未知人脸
+                if display_name == "Unknown":
+                    display_name = "未知"
+                elif display_name.startswith('unknown') or display_name.startswith('TEMP'):
+                    display_name = "未知"
+            
+            # 设置文本颜色
+            text_color = 'lime' if self.current_frame_face_known_list[i] else 'yellow'
             
             self.canvas.create_text( 
                 left, bottom + 20, 
                 text=display_name, 
-                fill='yellow', 
+                fill=text_color, 
                 font=('Arial', 12, 'bold'), 
                 anchor='nw'
             )
@@ -1400,7 +1625,7 @@ class TransparentFaceRecognizer:
             # 清空现有数据
             self.face_name_known_list.clear()
             self.face_feature_known_list.clear()
-            self.face_image_path_list.clear()
+            self.face_image_data_list.clear()
             self.processed_features.clear()
             
             # 获取所有人员文件夹
@@ -1545,11 +1770,11 @@ class TransparentFaceRecognizer:
                     
                     # 设置图像路径 - 如果有图像文件则使用第一个，否则使用默认路径
                     if image_files:
-                        self.face_image_path_list.append(os.path.join(folder_path, image_files[0]))
+                        self.face_image_data_list.append(os.path.join(folder_path, image_files[0]))
                     else:
                         # 创建一个默认的图像路径，即使文件不存在
                         default_img_path = os.path.join(folder_path, "img_face_1.jpg")
-                        self.face_image_path_list.append(default_img_path)
+                        self.face_image_data_list.append(default_img_path)
                     
                     feature_str = ','.join(map(str, avg_feature))
                     self.processed_features.add(feature_str)
@@ -1564,6 +1789,235 @@ class TransparentFaceRecognizer:
             print(msg)
             logging.error(msg)
             return False
+
+    def debug_database(self, icon=None, item=None):
+        """调试数据库 - 查看当前数据库状态"""
+        try:
+            def show_debug_info():
+                # 创建调试窗口
+                debug_window = Toplevel(self.root)
+                debug_window.title("数据库调试信息")
+                debug_window.geometry("600x500")
+                debug_window.attributes("-topmost", True)
+                debug_window.grab_set()
+                
+                # 主框架
+                main_frame = tk.Frame(debug_window)
+                main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                
+                # 标题
+                title_label = Label(main_frame, text="数据库调试信息", font=('Arial', 14, 'bold'), fg='blue')
+                title_label.pack(pady=(0, 10))
+                
+                # 创建文本框
+                text_frame = tk.Frame(main_frame)
+                text_frame.pack(fill=tk.BOTH, expand=True)
+                
+                text_widget = tk.Text(text_frame, wrap=tk.WORD, font=('Consolas', 10))
+                scrollbar = tk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text_widget.yview)
+                text_widget.configure(yscrollcommand=scrollbar.set)
+                
+                text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                
+                # 获取数据库信息
+                try:
+                    # 数据库统计信息
+                    stats = self.db_manager.get_statistics()
+                    text_widget.insert(tk.END, "=== 数据库统计信息 ===\n")
+                    text_widget.insert(tk.END, f"总人员: {stats['total_persons']} 个\n")
+                    text_widget.insert(tk.END, f"真实身份: {stats['real_persons']} 个\n")
+                    text_widget.insert(tk.END, f"临时身份: {stats['temp_persons']} 个\n")
+                    text_widget.insert(tk.END, f"人脸特征: {stats['total_features']} 个\n")
+                    text_widget.insert(tk.END, f"人脸图像: {stats['total_images']} 个\n\n")
+                    
+                    # 内存数据库信息
+                    text_widget.insert(tk.END, "=== 内存数据库信息 ===\n")
+                    text_widget.insert(tk.END, f"加载的人员数量: {len(self.face_name_known_list)}\n")
+                    text_widget.insert(tk.END, f"加载的特征数量: {len(self.face_feature_known_list)}\n")
+                    text_widget.insert(tk.END, f"加载的图像数量: {len(self.face_image_data_list)}\n\n")
+                    
+                    # 真实身份列表
+                    text_widget.insert(tk.END, "=== 真实身份列表 ===\n")
+                    if self.face_name_known_list:
+                        for i, name in enumerate(self.face_name_known_list):
+                            text_widget.insert(tk.END, f"{i+1}. {name}\n")
+                    else:
+                        text_widget.insert(tk.END, "没有加载任何真实身份\n")
+                    
+                    text_widget.insert(tk.END, "\n=== 临时身份信息 ===\n")
+                    text_widget.insert(tk.END, f"临时面孔数量: {len(self.temp_faces)}\n")
+                    if self.temp_faces:
+                        for feature_str, temp_info in self.temp_faces.items():
+                            text_widget.insert(tk.END, f"临时身份: {temp_info['temp_name']}_{temp_info['temp_id']}\n")
+                    
+                    text_widget.insert(tk.END, "\n=== 识别设置 ===\n")
+                    text_widget.insert(tk.END, f"识别阈值: {self.recognition_threshold}\n")
+                    text_widget.insert(tk.END, f"自动发现新面孔: {'开启' if self.auto_add_new_faces else '关闭'}\n")
+                    text_widget.insert(tk.END, f"API调用: {'开启' if self.api_enabled else '关闭'}\n")
+                    
+                    # 当前帧信息
+                    text_widget.insert(tk.END, "\n=== 当前帧信息 ===\n")
+                    text_widget.insert(tk.END, f"检测到人脸: {self.current_frame_face_cnt} 个\n")
+                    if self.current_frame_face_name_list:
+                        for i, name in enumerate(self.current_frame_face_name_list):
+                            known = self.current_frame_face_known_list[i]
+                            status = "已知" if known else "未知"
+                            text_widget.insert(tk.END, f"人脸 {i+1}: {name} ({status})\n")
+                    
+                except Exception as e:
+                    text_widget.insert(tk.END, f"获取调试信息时出错: {str(e)}\n")
+                
+                # 按钮
+                button_frame = tk.Frame(main_frame)
+                button_frame.pack(fill=tk.X, pady=(10, 0))
+                
+                def refresh_info():
+                    text_widget.delete(1.0, tk.END)
+                    # 重新获取信息（这里可以调用相同的逻辑）
+                    debug_window.destroy()
+                    self.debug_database()
+                
+                def reload_database():
+                    try:
+                        self.reload_face_database()
+                        text_widget.insert(tk.END, "\n=== 重新加载完成 ===\n")
+                        text_widget.insert(tk.END, f"重新加载后的人员数量: {len(self.face_name_known_list)}\n")
+                    except Exception as e:
+                        text_widget.insert(tk.END, f"\n重新加载失败: {str(e)}\n")
+                
+                tk.Button(button_frame, text="刷新", command=refresh_info).pack(side=tk.LEFT, padx=5)
+                tk.Button(button_frame, text="重新加载数据库", command=reload_database).pack(side=tk.LEFT, padx=5)
+                tk.Button(button_frame, text="关闭", command=debug_window.destroy).pack(side=tk.RIGHT, padx=5)
+            
+            # 在主线程中显示调试窗口
+            self.root.after(0, show_debug_info)
+            
+        except Exception as e:
+            logging.error(f"显示调试信息时出错: {str(e)}")
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("错误", f"显示调试信息时出错:\n{str(e)}")
+
+    def clear_database(self, icon=None, item=None):
+        """清空数据库"""
+        def show_clear_dialog():
+            # 创建密码确认对话框
+            dialog = Toplevel(self.root)
+            dialog.title("清空数据库")
+            dialog.geometry("450x350")
+            dialog.attributes("-topmost", True)
+            dialog.grab_set()
+            
+            # 主框架
+            main_frame = tk.Frame(dialog)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+            
+            # 警告标题
+            warning_label = Label(main_frame, text="⚠️ 危险操作警告", font=('Arial', 14, 'bold'), fg='red')
+            warning_label.pack(pady=(0, 10))
+            
+            # 警告信息
+            warning_text = """此操作将清空所有数据：
+• 所有人员信息
+• 所有人脸特征
+• 所有人脸图像
+• 所有识别记录
+
+此操作不可恢复！"""
+            
+            warning_info = Label(main_frame, text=warning_text, font=('Arial', 11), fg='red', justify='left')
+            warning_info.pack(pady=(0, 20))
+            
+            # 确认文字输入框
+            confirm_frame = tk.Frame(main_frame)
+            confirm_frame.pack(pady=(0, 20))
+            
+            confirm_label = Label(confirm_frame, text="请输入确认文字:", font=('Arial', 11))
+            confirm_label.pack(side=tk.LEFT, padx=(0, 10))
+            
+            confirm_var = tk.StringVar()
+            confirm_entry = tk.Entry(confirm_frame, textvariable=confirm_var, font=('Arial', 11), width=25)
+            confirm_entry.pack(side=tk.LEFT)
+            
+            # 提示文字
+            hint_label = Label(main_frame, text="请输入：确认清空数据库", font=('Arial', 10), fg='blue')
+            hint_label.pack(pady=(0, 20))
+            
+            # 按钮框架
+            button_frame = tk.Frame(main_frame)
+            button_frame.pack(pady=(0, 10))
+            
+            def confirm_clear():
+                """确认清空"""
+                confirm_text = confirm_var.get().strip()
+                
+                # 验证确认文字
+                if confirm_text != "确认清空数据库":
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", "确认文字不正确！\n请输入：确认清空数据库")
+                    confirm_var.set("")
+                    confirm_entry.focus()
+                    return
+                
+                # 再次确认
+                confirm_result = tk.messagebox.askyesno("最终确认", 
+                    "确认文字正确！\n\n这是最后一次确认，确定要清空所有数据吗？\n\n此操作不可恢复！")
+                
+                if confirm_result:
+                    try:
+                        # 执行清空操作
+                        logging.info("用户确认清空数据库")
+                        
+                        # 清空数据库
+                        success = self.db_manager.clear_database()
+                        
+                        if success:
+                            # 清空内存数据
+                            self.face_name_known_list.clear()
+                            self.face_feature_known_list.clear()
+                            self.face_image_data_list.clear()
+                            self.real_name_known_list.clear()
+                            self.processed_features.clear()
+                            self.temp_faces.clear()
+                            self.shown_faces.clear()
+                            
+                            # 重置临时用户计数器
+                            self.temp_user_counter = 1
+                            
+                            logging.info("数据库清空成功")
+                            tk.messagebox.showinfo("成功", "数据库已成功清空！\n\n所有数据已被删除。")
+                        else:
+                            tk.messagebox.showerror("错误", "清空数据库失败！")
+                        
+                        dialog.destroy()
+                        
+                    except Exception as e:
+                        logging.error(f"清空数据库时出错: {str(e)}")
+                        tk.messagebox.showerror("错误", f"清空数据库时出错:\n{str(e)}")
+                        dialog.destroy()
+            
+            def cancel_clear():
+                """取消清空"""
+                dialog.destroy()
+            
+            # 确认按钮
+            confirm_btn = tk.Button(button_frame, text="确认清空", command=confirm_clear, 
+                                  font=('Arial', 11), width=12, bg='red', fg='white')
+            confirm_btn.pack(side=tk.LEFT, padx=5)
+            
+            # 取消按钮
+            cancel_btn = tk.Button(button_frame, text="取消", command=cancel_clear, 
+                                 font=('Arial', 11), width=12, bg='gray', fg='white')
+            cancel_btn.pack(side=tk.LEFT, padx=5)
+            
+            # 绑定回车键
+            confirm_entry.bind('<Return>', lambda e: confirm_clear())
+            
+            # 设置焦点
+            confirm_entry.focus()
+        
+        # 在主线程中显示对话框
+        self.root.after(0, show_clear_dialog)
 
 def detect_gpu_availability():
     """检测GPU可用性"""
@@ -1593,6 +2047,7 @@ def detect_gpu_availability():
 gpu_available, gpu_count = detect_gpu_availability()
 
 def main():
+    recognizer = None
     try:
         logging.info("=" * 50)
         logging.info("人脸识别监控系统启动")
@@ -1601,31 +2056,21 @@ def main():
         # 创建主实例
         recognizer = TransparentFaceRecognizer()
         
-        # 检查是否需要重新生成CSV文件（首次启动或CSV文件不存在）
-        csv_path = "data/features_all.csv"
-        if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
-            # 首次启动或CSV文件为空，重新生成
-            print("首次启动，正在重新生成人脸特征文件...")
-            logging.info("首次启动，开始重新生成人脸特征文件...")
-            
-            # 显示启动进度条
-            recognizer.show_loading_progress("正在初始化人脸库...", lambda: recognizer.regenerate_csv_from_images())
-        else:
-            # CSV文件存在，直接加载
-            print("检测到现有特征文件，正在加载...")
-            logging.info("检测到现有特征文件，正在加载...")
-            
-            # 显示加载进度条
-            recognizer.show_loading_progress("正在加载人脸库...", lambda: recognizer.get_face_database())
+        # 显示加载进度条
+        recognizer.show_loading_progress("正在加载人脸库...", lambda: recognizer.get_face_database())
         
         print("启动人脸识别监控系统...")
         logging.info("开始运行人脸识别监控系统")
         recognizer.run() 
     except Exception as e:
-        logging.error(f" 程序运行出错: {str(e)}")
+        logging.error(f"程序运行出错: {str(e)}")
         logging.error("程序异常退出")
         raise
     finally:
+        # 关闭数据库连接
+        if recognizer and hasattr(recognizer, 'db_manager'):
+            recognizer.db_manager.close()
+        
         logging.info("=" * 50)
         logging.info("人脸识别监控系统退出")
         logging.info("=" * 50)
