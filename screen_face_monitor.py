@@ -265,7 +265,6 @@ class TransparentFaceRecognizer:
             pystray.MenuItem('手动添加人脸', self.manual_add_face),
             pystray.MenuItem('人脸库管理器', self.open_faces_folder),
             pystray.MenuItem('重点关注人员管理', self.manage_important_persons),
-            pystray.MenuItem('重置弹窗状态', self.reset_popup_status),
             pystray.MenuItem('清理所有临时身份', self.clear_all_temp_identities),
             pystray.MenuItem('清空数据库', self.clear_database),
             pystray.MenuItem('退出', self.quit_program) 
@@ -687,172 +686,31 @@ class TransparentFaceRecognizer:
         threading.Thread(target=run_face_library_manager, daemon=True).start()
     
     def manage_important_persons(self, icon=None, item=None):
-        """管理重点关注人员"""
-        try:
-            def show_important_persons_manager():
-                from tkinter import messagebox
-                try:
-                    # 创建重点关注人员管理窗口
-                    dialog = Toplevel(self.root)
-                    dialog.title("重点关注人员管理")
-                    dialog.geometry("800x600")
-                    dialog.attributes("-topmost", True)
-                    dialog.grab_set()
-                    
-                    # 主框架
-                    main_frame = tk.Frame(dialog)
-                    main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-                    
-                    # 标题
-                    title_label = Label(main_frame, text="⭐ 重点关注人员管理 ⭐", 
-                                       font=('Arial', 16, 'bold'), fg='red')
-                    title_label.pack(pady=(0, 20))
-                    
-                    # 获取重点关注人员列表
-                    important_persons = self.db_manager.get_important_persons()
-                    
-                    # 创建人员列表框架
-                    list_frame = tk.Frame(main_frame)
-                    list_frame.pack(fill=tk.BOTH, expand=True)
-                    
-                    # 创建Treeview显示人员列表
-                    columns = ('ID', '姓名', '身份证号', '类型', '创建时间')
-                    tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
-                    
-                    # 设置列标题
-                    for col in columns:
-                        tree.heading(col, text=col)
-                        tree.column(col, width=120)
-                    
-                    # 添加滚动条
-                    scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
-                    tree.configure(yscrollcommand=scrollbar.set)
-                    
-                    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-                    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        """管理重点关注人员（外部脚本）"""
+        def run_important_person_manager():
+            try:
+                logging.info("启动重点关注人员管理工具")
+                import subprocess
+                import sys
 
-                    def refresh_list():
-                        """刷新重点关注人员列表"""
-                        # 清空现有数据
-                        for item in tree.get_children():
-                            tree.delete(item)
-                        
-                        # 重新获取数据
-                        important_persons = self.db_manager.get_important_persons()
-                        
-                        # 填充数据
-                        for person in important_persons:
-                            display_name = person.get('real_name') or person['name']
-                            display_id = person.get('real_id_card') or person.get('id_card') or '无'
-                            person_type = "临时" if person['is_temp'] else "真实"
-                            
-                            created_time = person.get('created_time', '未知')
-                            if created_time and created_time != '未知':
-                                try:
-                                    dt = datetime.fromisoformat(created_time.replace('Z', '+00:00'))
-                                    formatted_time = dt.strftime('%Y-%m-%d %H:%M')
-                                except (ValueError, TypeError):
-                                    formatted_time = created_time
-                            else:
-                                formatted_time = "未知"
-                            
-                            tree.insert('', 'end', values=(person['id'], display_name, display_id, person_type, formatted_time))
-                        
-                        if important_persons:
-                            messagebox.showinfo("刷新", f"已刷新重点关注人员列表，共 {len(important_persons)} 人")
-                    
-                    # 初始加载数据
-                    refresh_list()
-                    
-                    if not self.db_manager.get_important_persons():
-                         # 没有重点关注人员
-                        no_data_label = Label(list_frame, text="当前没有重点关注人员\n请在人脸库管理器中设置重点关注人员", 
-                                             font=('Arial', 12), fg='gray')
-                        no_data_label.pack(expand=True)
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                manager_script = os.path.join(script_dir, "important_person_manager.py")
 
-                    def remove_important():
-                        """取消选中人员的重点关注状态"""
-                        selection = tree.selection()
-                        if not selection:
-                            messagebox.showwarning("警告", "请先选择要取消重点关注的人员", parent=dialog)
-                            return
-                        
-                        # 从Treeview中获取人员ID和姓名
-                        selected_item = tree.item(selection[0])
-                        person_id = selected_item['values'][0]
-                        person_name = selected_item['values'][1]
-                        
-                        # 再次确认操作
-                        result = messagebox.askyesno("确认操作", 
-                                                     f"确定要取消人员 '{person_name}' 的重点关注状态吗？\n\n此操作将刷新系统的人脸数据，可能会有短暂卡顿。",
-                                                     parent=dialog)
-                        
-                        if result:
-                            try:
-                                # 步骤1: 更新数据库
-                                success = self.db_manager.set_important_status(person_id, False)
-                                
-                                if success:
-                                    logging.info(f"已在数据库中取消 {person_name} (ID: {person_id}) 的重点关注状态。")
-                                    
-                                    # 步骤2: 强制重新加载内存中的人脸数据库，这是关键！
-                                    # 使用 after 以避免阻塞当前UI线程
-                                    self.root.after(100, lambda: self.show_loading_progress(
-                                        "正在更新人脸识别数据...",
-                                        self.reload_face_database
-                                    ))
+                if os.path.exists(manager_script):
+                    process = subprocess.Popen([sys.executable, manager_script])
+                    process.wait()
+                    self.show_loading_progress("正在更新人脸库...", self.reload_face_database)
+                else:
+                    logging.error(f"找不到重点关注人员管理脚本: {manager_script}")
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", f"找不到重点关注人员管理脚本:\n{manager_script}")
+            except Exception as e:
+                logging.error(f"启动重点关注人员管理工具时出错: {str(e)}")
+                import tkinter.messagebox as messagebox
+                messagebox.showerror("错误", f"启动重点关注人员管理工具时出错:\n{str(e)}")
 
-                                    # 步骤3: 从UI列表中移除该项
-                                    tree.delete(selection[0])
-                                    
-                                    messagebox.showinfo("成功", f"已取消 '{person_name}' 的重点关注状态。\n系统数据正在后台更新。", parent=dialog)
-                                else:
-                                    messagebox.showerror("数据库错误", "更新数据库失败，无法取消重点关注状态。", parent=dialog)
-                            except Exception as e:
-                                logging.error(f"取消重点关注时发生错误: {str(e)}")
-                                messagebox.showerror("程序错误", f"取消重点关注时发生内部错误: {str(e)}", parent=dialog)
-
-                    # 按钮框架
-                    button_frame = tk.Frame(main_frame)
-                    button_frame.pack(fill=tk.X, pady=(20, 0))
-
-                    # 使用 grid 布局来更精确地控制按钮位置
-                    button_frame.columnconfigure((0, 1, 2, 3), weight=1) # 让列平均分配空间
-
-                    # 按钮定义
-                    refresh_btn = tk.Button(button_frame, text="刷新列表", 
-                                          command=refresh_list, 
-                                          font=('Arial', 11), bg='#4CAF50', fg='white')
-                    
-                    remove_btn = tk.Button(button_frame, text="取消重点关注", 
-                                         command=remove_important, # 直接调用函数
-                                         font=('Arial', 11), bg='#FF9800', fg='white')
-                    
-                    open_manager_btn = tk.Button(button_frame, text="打开人脸库", 
-                                               command=self.open_faces_folder, # 直接调用
-                                               font=('Arial', 11), bg='#2196F3', fg='white')
-                    
-                    close_btn = tk.Button(button_frame, text="关闭", 
-                                        command=dialog.destroy, 
-                                        font=('Arial', 11), width=10)
-
-                    # 将按钮放置到网格中
-                    refresh_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-                    remove_btn.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-                    open_manager_btn.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
-                    close_btn.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
-
-                except Exception as e:
-                    logging.error(f"显示重点关注人员管理器失败: {str(e)}")
-                    messagebox.showerror("错误", f"显示重点关注人员管理器失败:\n{str(e)}")
-            
-            self.root.after(0, show_important_persons_manager)
-            
-        except Exception as e:
-            logging.error(f"管理重点关注人员失败: {str(e)}")
-            from tkinter import messagebox
-            messagebox.showerror("错误", f"管理重点关注人员失败:\n{str(e)}")
-
+        threading.Thread(target=run_important_person_manager, daemon=True).start()
+    
     def clear_all_temp_identities(self, icon=None, item=None):
         """清理所有临时身份（包括内存中的）"""
         try:
@@ -1978,126 +1836,30 @@ class TransparentFaceRecognizer:
             messagebox.showerror("错误", f"显示调试信息时出错:\n{str(e)}")
 
     def clear_database(self, icon=None, item=None):
-        """清空数据库"""
-        def show_clear_dialog():
-            # 创建密码确认对话框
-            dialog = Toplevel(self.root)
-            dialog.title("清空数据库")
-            dialog.geometry("450x500")
-            dialog.attributes("-topmost", True)
-            dialog.grab_set()
-            
-            # 主框架
-            main_frame = tk.Frame(dialog)
-            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-            
-            # 警告标题
-            warning_label = Label(main_frame, text="⚠️ 危险操作警告", font=('Arial', 14, 'bold'), fg='red')
-            warning_label.pack(pady=(0, 10))
-            
-            # 警告信息
-            warning_text = """
-此操作将清空所有数据：
-• 所有人员信息
-• 所有人脸特征
-• 所有人脸图像
-• 所有识别记录
+        """清空数据库（外部脚本）"""
+        def run_clear_database_tool():
+            try:
+                logging.info("启动清空数据库工具")
+                import subprocess
+                import sys
 
-此操作不可恢复！"""
-            
-            warning_info = Label(main_frame, text=warning_text, font=('Arial', 11), fg='red', justify='left')
-            warning_info.pack(pady=(0, 20))
-            
-            # 确认文字输入框
-            confirm_frame = tk.Frame(main_frame)
-            confirm_frame.pack(pady=(0, 20))
-            
-            confirm_label = Label(confirm_frame, text="请输入确认文字:", font=('Arial', 11))
-            confirm_label.pack(side=tk.LEFT, padx=(0, 10))
-            
-            confirm_var = tk.StringVar()
-            confirm_entry = tk.Entry(confirm_frame, textvariable=confirm_var, font=('Arial', 11), width=25)
-            confirm_entry.pack(side=tk.LEFT)
-            
-            # 提示文字
-            hint_label = Label(main_frame, text="请输入：确认清空数据库", font=('Arial', 10), fg='blue')
-            hint_label.pack(pady=(0, 20))
-            
-            # 按钮框架
-            button_frame = tk.Frame(main_frame)
-            button_frame.pack(pady=(0, 10))
-            
-            def confirm_clear():
-                """确认清空"""
-                confirm_text = confirm_var.get().strip()
-                
-                # 验证确认文字
-                if confirm_text != "确认清空数据库":
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                clear_script = os.path.join(script_dir, "clear_database_tool.py")
+
+                if os.path.exists(clear_script):
+                    process = subprocess.Popen([sys.executable, clear_script])
+                    process.wait()
+                    self.show_loading_progress("正在更新人脸库...", self.reload_face_database)
+                else:
+                    logging.error(f"找不到清空数据库脚本: {clear_script}")
                     import tkinter.messagebox as messagebox
-                    messagebox.showerror("错误", "确认文字不正确！\n请输入：确认清空数据库")
-                    confirm_var.set("")
-                    confirm_entry.focus()
-                    return
-                
-                # 再次确认
-                confirm_result = tk.messagebox.askyesno("最终确认", 
-                    "确认文字正确！\n\n这是最后一次确认，确定要清空所有数据吗？\n\n此操作不可恢复！")
-                
-                if confirm_result:
-                    try:
-                        # 执行清空操作
-                        logging.info("用户确认清空数据库")
-                        
-                        # 清空数据库
-                        success = self.db_manager.clear_database()
-                        
-                        if success:
-                            # 清空内存数据
-                            self.face_name_known_list.clear()
-                            self.face_feature_known_list.clear()
-                            self.face_image_data_list.clear()
-                            self.real_name_known_list.clear()
-                            self.processed_features.clear()
-                            self.temp_faces.clear()
-                            self.shown_faces.clear()
-                            
-                            # 重置临时用户计数器
-                            self.temp_user_counter = 1
-                            
-                            logging.info("数据库清空成功")
-                            tk.messagebox.showinfo("成功", "数据库已成功清空！\n\n所有数据已被删除。")
-                        else:
-                            tk.messagebox.showerror("错误", "清空数据库失败！")
-                        
-                        dialog.destroy()
-                        
-                    except Exception as e:
-                        logging.error(f"清空数据库时出错: {str(e)}")
-                        tk.messagebox.showerror("错误", f"清空数据库时出错:\n{str(e)}")
-                        dialog.destroy()
-            
-            def cancel_clear():
-                """取消清空"""
-                dialog.destroy()
-            
-            # 确认按钮
-            confirm_btn = tk.Button(button_frame, text="确认清空", command=confirm_clear, 
-                                  font=('Arial', 11), width=12, bg='red', fg='white')
-            confirm_btn.pack(side=tk.LEFT, padx=5)
-            
-            # 取消按钮
-            cancel_btn = tk.Button(button_frame, text="取消", command=cancel_clear, 
-                                 font=('Arial', 11), width=12, bg='gray', fg='white')
-            cancel_btn.pack(side=tk.LEFT, padx=5)
-            
-            # 绑定回车键
-            confirm_entry.bind('<Return>', lambda e: confirm_clear())
-            
-            # 设置焦点
-            confirm_entry.focus()
-        
-        # 在主线程中显示对话框
-        self.root.after(0, show_clear_dialog)
+                    messagebox.showerror("错误", f"找不到清空数据库脚本:\n{clear_script}")
+            except Exception as e:
+                logging.error(f"启动清空数据库工具时出错: {str(e)}")
+                import tkinter.messagebox as messagebox
+                messagebox.showerror("错误", f"启动清空数据库工具时出错:\n{str(e)}")
+
+        threading.Thread(target=run_clear_database_tool, daemon=True).start()
 
     def show_important_person_popup(self, name, idx, person_id):
         """显示重点关注人员信息弹窗"""
