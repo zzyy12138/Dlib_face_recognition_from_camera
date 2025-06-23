@@ -191,8 +191,20 @@ class FaceLibraryManager:
                     # 没有身份证号的也显示
                     unique_persons[person_id] = row
             
+            # 统计去重后的各类人数
+            total_count = 0
+            real_count = 0
+            temp_count = 0
+            important_count = 0
             for row in unique_persons.values():
                 person_id, name, id_card, is_temp, is_important, created_time, real_name, real_id_card = row
+                total_count += 1
+                if is_temp:
+                    temp_count += 1
+                else:
+                    real_count += 1
+                if is_important:
+                    important_count += 1
                 # 确定显示名称
                 display_name = real_name if real_name else name
                 # 确定身份证号
@@ -212,12 +224,10 @@ class FaceLibraryManager:
                     formatted_time = "未知"
                 self.tree.insert('', 'end', values=(person_id, display_name, display_id, person_type, formatted_time))
             conn.close()
-            # 更新统计信息
-            stats = self.db_manager.get_statistics()
-            important_count = len(self.db_manager.get_important_persons())
-            status_text = f"总人员: {stats['total_persons']} | 真实身份: {stats['real_persons']} | 临时身份: {stats['temp_persons']} | 重点关注: {important_count}"
+            # 用去重后的统计信息更新状态栏
+            status_text = f"总人员: {total_count} | 真实身份: {real_count} | 临时身份: {temp_count} | 重点关注: {important_count}"
             self.status_label.config(text=status_text)
-            logging.info(f"已加载 {stats['total_persons']} 个人员数据")
+            logging.info(f"已加载 {total_count} 个人员数据（去重统计）")
         except Exception as e:
             logging.error(f"加载人员数据失败: {str(e)}")
             messagebox.showerror("错误", f"加载人员数据失败:\n{str(e)}")

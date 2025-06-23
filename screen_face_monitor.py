@@ -297,11 +297,7 @@ class TransparentFaceRecognizer:
             dialog.grab_set()
             
             # 说明文字
-            info_text = """识别阈值说明：
-• 阈值越小，识别越严格，误识别率越低
-• 阈值越大，识别越宽松，漏识别率越低
-• 推荐范围：0.3 - 0.6
-• 当前阈值：{:.2f}""".format(self.recognition_threshold)
+            info_text = """识别阈值说明：\n• 阈值越小，识别越严格，误识别率越低\n• 阈值越大，识别越宽松，漏识别率越低\n• 推荐范围：0.3 - 0.6\n• 当前阈值：{:.2f}""".format(self.recognition_threshold)
             
             Label(dialog, text=info_text, font=('Arial', 10), justify='left').pack(pady=10)
             
@@ -325,6 +321,8 @@ class TransparentFaceRecognizer:
                     self.tray_icon.update_menu()
                 # 更新对话框中的当前阈值显示
                 current_threshold_label.config(text=f"当前阈值：{value:.2f}")
+                # 同步输入框
+                threshold_entry_var.set(f"{value:.2f}")
             
             # 第一行：严格和标准
             tk.Button(row1_frame, text="严格 (0.3)", width=12,
@@ -342,6 +340,30 @@ class TransparentFaceRecognizer:
             current_threshold_label = Label(dialog, text=f"当前阈值：{self.recognition_threshold:.2f}", 
                                           font=('Arial', 12, 'bold'), fg='blue')
             current_threshold_label.pack(pady=10)
+
+            # 手动输入精细阈值
+            input_frame = tk.Frame(dialog)
+            input_frame.pack(pady=10)
+            Label(input_frame, text="手动输入阈值 (0.1~1.0):", font=('Arial', 10)).pack(side=tk.LEFT)
+            threshold_entry_var = tk.StringVar()
+            threshold_entry_var.set(f"{self.recognition_threshold:.2f}")
+            threshold_entry = tk.Entry(input_frame, textvariable=threshold_entry_var, width=8, font=('Arial', 12))
+            threshold_entry.pack(side=tk.LEFT, padx=5)
+            
+            def set_custom_threshold():
+                try:
+                    value = float(threshold_entry_var.get())
+                    if 0.1 <= value <= 1.0:
+                        self.recognition_threshold = value
+                        logging.info(f" 识别阈值已设置为: {value:.4f}")
+                        if hasattr(self, 'tray_icon') and self.tray_icon:
+                            self.tray_icon.update_menu()
+                        current_threshold_label.config(text=f"当前阈值：{value:.4f}")
+                    else:
+                        messagebox.showwarning("阈值范围错误", "请输入0.1~1.0之间的数值！")
+                except Exception:
+                    messagebox.showwarning("输入错误", "请输入有效的数字！")
+            tk.Button(input_frame, text="设置", command=set_custom_threshold, width=8).pack(side=tk.LEFT, padx=5)
             
             # 关闭按钮
             tk.Button(dialog, text="关闭", command=dialog.destroy, width=10).pack(pady=10)
