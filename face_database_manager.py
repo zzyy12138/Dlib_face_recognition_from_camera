@@ -51,6 +51,7 @@ class FaceDatabaseManager:
                         real_name TEXT,
                         real_id_card TEXT,
                         is_temp BOOLEAN DEFAULT 0,
+                        is_important BOOLEAN DEFAULT 0,
                         created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(name, id_card)
@@ -112,7 +113,7 @@ class FaceDatabaseManager:
                 conn.close()
     
     def add_person(self, name: str, id_card: str = None, is_temp: bool = False, 
-                   real_name: str = None, real_id_card: str = None) -> int:
+                   real_name: str = None, real_id_card: str = None, is_important: bool = False) -> int:
         """
         添加新人员
         
@@ -122,6 +123,7 @@ class FaceDatabaseManager:
             is_temp: 是否为临时身份
             real_name: 真实姓名（用于API识别后更新）
             real_id_card: 真实身份证号
+            is_important: 是否为重点关注人员
             
         Returns:
             人员ID
@@ -132,9 +134,9 @@ class FaceDatabaseManager:
             
             try:
                 cursor.execute('''
-                    INSERT OR REPLACE INTO persons (name, id_card, real_name, real_id_card, is_temp, updated_time)
-                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (name, id_card, real_name, real_id_card, is_temp))
+                    INSERT OR REPLACE INTO persons (name, id_card, real_name, real_id_card, is_temp, is_important, updated_time)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (name, id_card, real_name, real_id_card, is_temp, is_important))
                 
                 person_id = cursor.lastrowid
                 conn.commit()
@@ -149,35 +151,51 @@ class FaceDatabaseManager:
             finally:
                 conn.close()
     
-    def add_face_image(self, person_id: int, image_data: bytes, 
+    def add_face_image(self, person_id: int, image_data: any,
                       image_format: str = 'jpg') -> int:
         """
-        添加人脸图像
-        
+        添加人脸图像，智能处理传入的数据类型。
+
         Args:
             person_id: 人员ID
-            image_data: 图像二进制数据
+            image_data: 图像数据，可以是文件路径(str)或二进制数据(bytes)
             image_format: 图像格式
-            
+
         Returns:
             图像ID
         """
         with self.lock:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             try:
+                img_bytes = None
+                # 判断传入的是文件路径还是二进制数据
+                if isinstance(image_data, str) and os.path.exists(image_data):
+                    # 如果是有效的文件路径，读取文件内容
+                    logging.info(f"从文件路径加载图像: {image_data}")
+                    with open(image_data, 'rb') as f:
+                        img_bytes = f.read()
+                elif isinstance(image_data, bytes):
+                    # 如果已经是二进制数据，直接使用
+                    img_bytes = image_data
+                else:
+                    raise ValueError("无效的图像数据类型，必须是文件路径(str)或二进制数据(bytes)")
+
+                if img_bytes is None:
+                    raise IOError("无法获取有效的图像二进制数据")
+                
                 cursor.execute('''
                     INSERT INTO face_images (person_id, image_data, image_format, image_size, created_time)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (person_id, image_data, image_format, len(image_data)))
-                
+                ''', (person_id, img_bytes, image_format, len(img_bytes)))
+
                 image_id = cursor.lastrowid
                 conn.commit()
-                
+
                 logging.debug(f"添加人脸图像成功: 人员ID {person_id}, 图像ID {image_id}")
                 return image_id
-                
+
             except Exception as e:
                 logging.error(f"添加人脸图像失败: {str(e)}")
                 conn.rollback()
@@ -256,12 +274,12 @@ class FaceDatabaseManager:
             try:
                 if id_card:
                     cursor.execute('''
-                        SELECT id, name, id_card, real_name, real_id_card, is_temp, created_time, updated_time
+                        SELECT id, name, id_card, real_name, real_id_card, is_temp, is_important, created_time, updated_time
                         FROM persons WHERE name = ? AND id_card = ?
                     ''', (name, id_card))
                 else:
                     cursor.execute('''
-                        SELECT id, name, id_card, real_name, real_id_card, is_temp, created_time, updated_time
+                        SELECT id, name, id_card, real_name, real_id_card, is_temp, is_important, created_time, updated_time
                         FROM persons WHERE name = ?
                     ''', (name,))
                 
@@ -274,8 +292,40 @@ class FaceDatabaseManager:
                         'real_name': row[3],
                         'real_id_card': row[4],
                         'is_temp': bool(row[5]),
-                        'created_time': row[6],
-                        'updated_time': row[7]
+                        'is_important': bool(row[6]),
+                        'created_time': row[7],
+                        'updated_time': row[8]
+                    }
+                return None
+                
+            finally:
+                conn.close()
+    
+    def get_person_by_name(self, name: str) -> Optional[Dict]:
+        """根据姓名获取人员信息（返回第一个匹配的记录）"""
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute('''
+                    SELECT id, name, id_card, real_name, real_id_card, is_temp, is_important, created_time, updated_time
+                    FROM persons WHERE name = ?
+                    ORDER BY created_time DESC LIMIT 1
+                ''', (name,))
+                
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'id': row[0],
+                        'name': row[1],
+                        'id_card': row[2],
+                        'real_name': row[3],
+                        'real_id_card': row[4],
+                        'is_temp': bool(row[5]),
+                        'is_important': bool(row[6]),
+                        'created_time': row[7],
+                        'updated_time': row[8]
                     }
                 return None
                 
@@ -290,7 +340,7 @@ class FaceDatabaseManager:
             
             try:
                 cursor.execute('''
-                    SELECT id, name, id_card, real_name, real_id_card, is_temp, created_time, updated_time
+                    SELECT id, name, id_card, real_name, real_id_card, is_temp, is_important, created_time, updated_time
                     FROM persons WHERE id = ?
                 ''', (person_id,))
                 
@@ -303,10 +353,55 @@ class FaceDatabaseManager:
                         'real_name': row[3],
                         'real_id_card': row[4],
                         'is_temp': bool(row[5]),
-                        'created_time': row[6],
-                        'updated_time': row[7]
+                        'is_important': bool(row[6]),
+                        'created_time': row[7],
+                        'updated_time': row[8]
                     }
                 return None
+                
+            finally:
+                conn.close()
+    
+    def get_all_persons(self, include_temp: bool = False) -> List[Dict]:
+        """获取所有人员信息
+        
+        Args:
+            include_temp: 是否包含临时身份
+            
+        Returns:
+            人员信息列表
+        """
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            try:
+                if include_temp:
+                    cursor.execute('''
+                        SELECT id, name, id_card, real_name, real_id_card, is_temp, is_important, created_time, updated_time
+                        FROM persons ORDER BY name, id_card
+                    ''')
+                else:
+                    cursor.execute('''
+                        SELECT id, name, id_card, real_name, real_id_card, is_temp, is_important, created_time, updated_time
+                        FROM persons WHERE is_temp = 0 ORDER BY name, id_card
+                    ''')
+                
+                persons = []
+                for row in cursor.fetchall():
+                    persons.append({
+                        'id': row[0],
+                        'name': row[1],
+                        'id_card': row[2],
+                        'real_name': row[3],
+                        'real_id_card': row[4],
+                        'is_temp': bool(row[5]),
+                        'is_important': bool(row[6]),
+                        'created_time': row[7],
+                        'updated_time': row[8]
+                    })
+                
+                return persons
                 
             finally:
                 conn.close()
@@ -376,7 +471,7 @@ class FaceDatabaseManager:
             finally:
                 conn.close()
     
-    def find_similar_face(self, feature_vector, threshold: float = 0.5) -> Optional[Tuple[int, float, str, str]]:
+    def find_similar_face(self, feature_vector, threshold: float = 0.5) -> Optional[Tuple[int, float, str, str, bool]]:
         """
         查找相似的人脸
         
@@ -385,7 +480,7 @@ class FaceDatabaseManager:
             threshold: 相似度阈值
             
         Returns:
-            匹配结果 (person_id, distance, person_name, real_name) 或 None
+            匹配结果 (person_id, distance, person_name, real_name, is_important) 或 None
         """
         with self.lock:
             conn = sqlite3.connect(self.db_path)
@@ -400,9 +495,9 @@ class FaceDatabaseManager:
                     # 如果已经是列表或元组，直接使用
                     feature_list = list(feature_vector)
                 
-                # 获取所有非临时身份的特征，包括real_name
+                # 获取所有非临时身份的特征，包括real_name和is_important
                 cursor.execute('''
-                    SELECT f.person_id, f.feature_vector, p.name, p.real_name
+                    SELECT f.person_id, f.feature_vector, p.name, p.real_name, p.is_important
                     FROM face_features f
                     JOIN persons p ON f.person_id = p.id
                     WHERE p.is_temp = 0
@@ -417,7 +512,7 @@ class FaceDatabaseManager:
                     
                     if distance < min_distance:
                         min_distance = distance
-                        best_match = (row[0], distance, row[2], row[3])  # person_id, distance, name, real_name
+                        best_match = (row[0], distance, row[2], row[3], bool(row[4]))  # person_id, distance, name, real_name, is_important
                 
                 # 检查是否满足阈值
                 if best_match and best_match[1] < threshold:
@@ -443,28 +538,136 @@ class FaceDatabaseManager:
         
         return np.linalg.norm(np.array(feature1_list) - np.array(feature2_list))
     
-    def update_person_real_info(self, person_id: int, real_name: str, real_id_card: str) -> bool:
-        """更新人员的真实身份信息"""
+    def update_person_real_info(self, person_id: int, real_name: str, real_id_card: str, is_temp: bool = None) -> bool:
+        """
+        更新人员的真实身份信息
+        
+        Args:
+            person_id: 人员ID
+            real_name: 真实姓名
+            real_id_card: 真实身份证号
+            is_temp: 是否为临时身份，None表示不更新此字段
+            
+        Returns:
+            是否更新成功
+        """
         with self.lock:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
             try:
-                # 只更新real_name和real_id_card字段，不修改name和id_card
-                cursor.execute('''
-                    UPDATE persons 
-                    SET real_name = ?, real_id_card = ?, is_temp = 0, updated_time = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (real_name, real_id_card, person_id))
+                if is_temp is not None:
+                    # 同时更新身份类型
+                    cursor.execute('''
+                        UPDATE persons 
+                        SET real_name = ?, real_id_card = ?, is_temp = ?, updated_time = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (real_name, real_id_card, is_temp, person_id))
+                else:
+                    # 只更新真实身份信息
+                    cursor.execute('''
+                        UPDATE persons 
+                        SET real_name = ?, real_id_card = ?, updated_time = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (real_name, real_id_card, person_id))
                 
                 conn.commit()
-                logging.info(f"更新人员真实身份信息成功: ID {person_id} -> {real_name} - {real_id_card}")
-                return True
+                success = cursor.rowcount > 0
+                
+                if success:
+                    status = "临时身份" if is_temp else "真实身份" if is_temp is not None else "身份信息"
+                    logging.info(f"更新人员{status}成功: ID {person_id} -> {real_name} - {real_id_card}")
+                else:
+                    logging.warning(f"未找到人员ID {person_id}，更新失败")
+                
+                return success
                 
             except Exception as e:
                 logging.error(f"更新人员真实身份信息失败: {str(e)}")
                 conn.rollback()
                 return False
+            finally:
+                conn.close()
+    
+    def set_important_status(self, person_id: int, is_important: bool) -> bool:
+        """
+        设置人员的重点关注状态
+        
+        Args:
+            person_id: 人员ID
+            is_important: 是否为重点关注人员
+            
+        Returns:
+            是否设置成功
+        """
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute('''
+                    UPDATE persons 
+                    SET is_important = ?, updated_time = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (is_important, person_id))
+                
+                conn.commit()
+                success = cursor.rowcount > 0
+                
+                if success:
+                    status = "重点关注" if is_important else "普通人员"
+                    logging.info(f"设置人员重点关注状态成功: ID {person_id} -> {status}")
+                else:
+                    logging.warning(f"未找到人员ID {person_id}，设置重点关注状态失败")
+                
+                return success
+                
+            except Exception as e:
+                logging.error(f"设置人员重点关注状态失败: {str(e)}")
+                conn.rollback()
+                return False
+            finally:
+                conn.close()
+    
+    def get_important_persons(self) -> List[Dict]:
+        """
+        获取所有重点关注人员
+        
+        Returns:
+            重点关注人员列表
+        """
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute('''
+                    SELECT id, name, id_card, real_name, real_id_card, is_temp, is_important, created_time, updated_time
+                    FROM persons
+                    WHERE is_important = 1
+                    ORDER BY updated_time DESC
+                ''')
+                
+                persons = []
+                for row in cursor.fetchall():
+                    person = {
+                        'id': row[0],
+                        'name': row[1],
+                        'id_card': row[2],
+                        'real_name': row[3],
+                        'real_id_card': row[4],
+                        'is_temp': bool(row[5]),
+                        'is_important': bool(row[6]),
+                        'created_time': row[7],
+                        'updated_time': row[8]
+                    }
+                    persons.append(person)
+                
+                return persons
+                
+            except Exception as e:
+                logging.error(f"获取重点关注人员失败: {str(e)}")
+                return []
             finally:
                 conn.close()
     

@@ -23,6 +23,7 @@ import mss
 import ctypes 
 import tkinter as tk 
 from tkinter import ttk
+from tkinter import messagebox
 import pystray 
 from tkinter import Canvas, Toplevel, Label, simpledialog 
 import random 
@@ -190,7 +191,7 @@ class TransparentFaceRecognizer:
         logging.info(f"识别阈值: {self.recognition_threshold}")
         logging.info(f"处理间隔: {self.process_interval}ms")
         logging.info(f"图像缩放: {self.image_scale}")
-        logging.info(f"弹窗显示: {'开启' if self.show_popup else '关闭'}")
+        logging.info(f"重点关注人员弹窗: {'开启' if self.show_popup else '关闭'}")
         logging.info(f"自动发现新面孔: {'开启' if self.auto_add_new_faces else '关闭'}")
         logging.info(f"状态显示: {'开启' if self.show_status_display else '关闭'}")
         logging.info(f"API库可用: {'是' if REQUESTS_AVAILABLE else '否'}")
@@ -230,7 +231,7 @@ class TransparentFaceRecognizer:
         image = image.resize((16, 16), Image.Resampling.LANCZOS)
         
         self.toggle_popup_item  = pystray.MenuItem(
-            lambda item: f"{'关闭' if self.show_popup  else '开启'}弹窗显示",
+            lambda item: f"{'关闭' if self.show_popup  else '开启'}重点关注人员弹窗",
             self.toggle_popup  
         )
         
@@ -263,6 +264,8 @@ class TransparentFaceRecognizer:
             # self.toggle_api_item,  # 删除API调用菜单项
             pystray.MenuItem('手动添加人脸', self.manual_add_face),
             pystray.MenuItem('人脸库管理器', self.open_faces_folder),
+            pystray.MenuItem('重点关注人员管理', self.manage_important_persons),
+            pystray.MenuItem('重置弹窗状态', self.reset_popup_status),
             pystray.MenuItem('清理所有临时身份', self.clear_all_temp_identities),
             pystray.MenuItem('清空数据库', self.clear_database),
             pystray.MenuItem('退出', self.quit_program) 
@@ -272,11 +275,11 @@ class TransparentFaceRecognizer:
         threading.Thread(target=self.tray_icon.run,  daemon=True).start()
  
     def toggle_popup(self, icon=None, item=None):
-        """切换弹窗显示状态"""
+        """切换重点关注人员弹窗显示状态"""
         self.show_popup  = not self.show_popup  
         if icon:
             icon.update_menu() 
-        logging.info(f" 弹窗显示已 {'开启' if self.show_popup  else '关闭'}")
+        logging.info(f"重点关注人员弹窗已 {'开启' if self.show_popup  else '关闭'}")
  
     def toggle_auto_add_new_faces(self, icon=None, item=None):
         """切换自动发现新面孔状态"""
@@ -464,7 +467,7 @@ class TransparentFaceRecognizer:
     def update_face_with_api_result(self, feature_str, api_result):
         """使用API结果更新人脸信息"""
         if not api_result:
-            logging.warning("API结果为空，无法更新人脸信息")
+            logging.warning("API结果为空，保持临时身份")
             return False
         
         try:
@@ -474,9 +477,17 @@ class TransparentFaceRecognizer:
                 return False
             
             temp_face = self.temp_faces[feature_str]
-            real_name = api_result['name']
-            real_id_card = api_result['id_card']
+            real_name = api_result.get('name', '').strip()
+            real_id_card = api_result.get('id_card', '').strip()
             person_id = temp_face['person_id']
+            
+            # 检查API是否返回了有效的姓名和身份证号
+            if not real_name or not real_id_card:
+                logging.warning(f"API返回的信息不完整，保持临时身份: {temp_face['temp_name']}")
+                return False
+            
+            # API正确返回了姓名和身份证号，设置为真实身份
+            logging.info(f"API正确返回身份信息: {real_name} - {real_id_card}，设置为真实身份")
             
             # 检查是否已存在相同身份
             existing_person = self.db_manager.get_person_by_name_id(real_name, real_id_card)
@@ -506,11 +517,13 @@ class TransparentFaceRecognizer:
                 # 新身份，更新临时记录为真实身份
                 logging.info(f"发现新身份 {real_name} - {real_id_card}，更新为真实身份")
                 
-                # 更新数据库中的身份信息
-                success = self.db_manager.update_person_real_info(person_id, real_name, real_id_card)
+                # 更新数据库中的身份信息，设置为真实身份（is_temp=False）
+                success = self.db_manager.update_person_real_info(person_id, real_name, real_id_card, is_temp=False)
                 if not success:
                     logging.error("更新数据库身份信息失败")
                     return False
+                
+                logging.info(f"已将 {real_name} 设置为真实身份")
                 
                 # 更新内存数据库
                 temp_person_name = f"{temp_face['temp_name']}_{temp_face['temp_id']}"
@@ -538,11 +551,14 @@ class TransparentFaceRecognizer:
                         # 如果没有图像数据，添加一个占位符
                         self.face_image_data_list.append(None)
                     logging.debug(f"已添加真实身份到内存数据库: {real_person_name}")
+                
+                # 将新身份的特征添加到已处理特征集合中，避免重复处理
+                self.processed_features.add(feature_str)
             
             # 从临时存储中移除
             del self.temp_faces[feature_str]
             
-            logging.info(f"成功更新人脸信息: {real_name} - {real_id_card}")
+            logging.info(f"成功更新人脸信息: {real_name} - {real_id_card} (真实身份)")
             return True
             
         except Exception as e:
@@ -645,255 +661,197 @@ class TransparentFaceRecognizer:
         threading.Thread(target=run_face_collector, daemon=True).start()
  
     def open_faces_folder(self, icon=None, item=None):
-        """打开人脸库管理器 - 显示数据库内容并预览图片"""
+        """打开人脸库管理器"""
+        def run_face_library_manager():
+            try:
+                logging.info("启动人脸库管理器")
+                import subprocess
+                import sys
+
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                face_library_manager_script = os.path.join(script_dir, "face_library_manager.py")
+
+                if os.path.exists(face_library_manager_script):
+                    process = subprocess.Popen([sys.executable, face_library_manager_script])
+                    process.wait()
+                    self.show_loading_progress("正在更新人脸库...", self.reload_face_database)
+                else:
+                    logging.error(f"找不到人脸库管理器脚本: {face_library_manager_script}")
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("错误", f"找不到人脸库管理器脚本:\n{face_library_manager_script}")
+            except Exception as e:
+                logging.error(f"启动人脸库管理器时出错: {str(e)}")
+                import tkinter.messagebox as messagebox
+                messagebox.showerror("错误", f"启动人脸库管理器时出错:\n{str(e)}")
+
+        threading.Thread(target=run_face_library_manager, daemon=True).start()
+    
+    def manage_important_persons(self, icon=None, item=None):
+        """管理重点关注人员"""
         try:
-            def show_face_library():
-                # 创建主窗口
-                main_window = Toplevel(self.root)
-                main_window.title("人脸库管理器")
-                main_window.geometry("800x600")
-                main_window.attributes("-topmost", True)
-                main_window.grab_set()
-                
-                # 主框架
-                main_frame = tk.Frame(main_window)
-                main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-                
-                # 标题
-                title_label = Label(main_frame, text="人脸库管理器", font=('Arial', 16, 'bold'), fg='blue')
-                title_label.pack(pady=(0, 10))
-                
-                # 创建左右分栏
-                paned_window = ttk.PanedWindow(main_frame, orient=tk.HORIZONTAL)
-                paned_window.pack(fill=tk.BOTH, expand=True)
-                
-                # 左侧：人员列表
-                left_frame = ttk.Frame(paned_window)
-                paned_window.add(left_frame, weight=1)
-                
-                # 人员列表标题
-                list_title = Label(left_frame, text="人员列表", font=('Arial', 12, 'bold'))
-                list_title.pack(pady=(0, 5))
-                
-                # 创建Treeview显示人员列表
-                columns = ('ID', '姓名', '身份证号', '类型', '创建时间')
-                tree = ttk.Treeview(left_frame, columns=columns, show='headings', height=15)
-                
-                # 设置列标题
-                for col in columns:
-                    tree.heading(col, text=col)
-                    tree.column(col, width=100)
-                
-                # 添加滚动条
-                scrollbar = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=tree.yview)
-                tree.configure(yscrollcommand=scrollbar.set)
-                
-                tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-                scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-                
-                # 右侧：详细信息
-                right_frame = ttk.Frame(paned_window)
-                paned_window.add(right_frame, weight=1)
-                
-                # 详细信息标题
-                detail_title = Label(right_frame, text="详细信息", font=('Arial', 12, 'bold'))
-                detail_title.pack(pady=(0, 5))
-                
-                # 详细信息显示区域
-                detail_frame = ttk.Frame(right_frame)
-                detail_frame.pack(fill=tk.BOTH, expand=True)
-                
-                # 图片显示区域
-                image_frame = ttk.LabelFrame(detail_frame, text="人脸图片")
-                image_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-                
-                image_label = Label(image_frame, text="请选择人员查看图片", font=('Arial', 10))
-                image_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-                
-                # 信息显示区域
-                info_frame = ttk.LabelFrame(detail_frame, text="人员信息")
-                info_frame.pack(fill=tk.X, pady=(0, 10))
-                
-                info_text = tk.Text(info_frame, height=8, wrap=tk.WORD, font=('Arial', 9))
-                info_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-                
-                # 按钮区域
-                button_frame = ttk.Frame(detail_frame)
-                button_frame.pack(fill=tk.X, pady=(0, 10))
-                
-                def load_person_data():
-                    """加载人员数据到列表"""
-                    try:
+            def show_important_persons_manager():
+                from tkinter import messagebox
+                try:
+                    # 创建重点关注人员管理窗口
+                    dialog = Toplevel(self.root)
+                    dialog.title("重点关注人员管理")
+                    dialog.geometry("800x600")
+                    dialog.attributes("-topmost", True)
+                    dialog.grab_set()
+                    
+                    # 主框架
+                    main_frame = tk.Frame(dialog)
+                    main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+                    
+                    # 标题
+                    title_label = Label(main_frame, text="⭐ 重点关注人员管理 ⭐", 
+                                       font=('Arial', 16, 'bold'), fg='red')
+                    title_label.pack(pady=(0, 20))
+                    
+                    # 获取重点关注人员列表
+                    important_persons = self.db_manager.get_important_persons()
+                    
+                    # 创建人员列表框架
+                    list_frame = tk.Frame(main_frame)
+                    list_frame.pack(fill=tk.BOTH, expand=True)
+                    
+                    # 创建Treeview显示人员列表
+                    columns = ('ID', '姓名', '身份证号', '类型', '创建时间')
+                    tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
+                    
+                    # 设置列标题
+                    for col in columns:
+                        tree.heading(col, text=col)
+                        tree.column(col, width=120)
+                    
+                    # 添加滚动条
+                    scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
+                    tree.configure(yscrollcommand=scrollbar.set)
+                    
+                    tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+                    def refresh_list():
+                        """刷新重点关注人员列表"""
                         # 清空现有数据
                         for item in tree.get_children():
                             tree.delete(item)
                         
-                        # 从数据库获取所有人员
-                        conn = sqlite3.connect(self.db_manager.db_path)
-                        cursor = conn.cursor()
+                        # 重新获取数据
+                        important_persons = self.db_manager.get_important_persons()
                         
-                        cursor.execute('''
-                            SELECT id, name, id_card, is_temp, created_time, real_name, real_id_card
-                            FROM persons
-                            ORDER BY created_time DESC
-                        ''')
-                        
-                        for row in cursor.fetchall():
-                            person_id, name, id_card, is_temp, created_time, real_name, real_id_card = row
+                        # 填充数据
+                        for person in important_persons:
+                            display_name = person.get('real_name') or person['name']
+                            display_id = person.get('real_id_card') or person.get('id_card') or '无'
+                            person_type = "临时" if person['is_temp'] else "真实"
                             
-                            # 确定显示名称
-                            display_name = name
-                            if real_name:
-                                display_name = real_name
-                            
-                            # 确定身份证号
-                            display_id = id_card
-                            if real_id_card:
-                                display_id = real_id_card
-                            
-                            # 确定类型
-                            person_type = "临时" if is_temp else "真实"
-                            
-                            # 格式化时间
-                            if created_time:
+                            created_time = person.get('created_time', '未知')
+                            if created_time and created_time != '未知':
                                 try:
                                     dt = datetime.fromisoformat(created_time.replace('Z', '+00:00'))
                                     formatted_time = dt.strftime('%Y-%m-%d %H:%M')
-                                except:
+                                except (ValueError, TypeError):
                                     formatted_time = created_time
                             else:
                                 formatted_time = "未知"
                             
-                            tree.insert('', 'end', values=(person_id, display_name, display_id, person_type, formatted_time))
+                            tree.insert('', 'end', values=(person['id'], display_name, display_id, person_type, formatted_time))
                         
-                        conn.close()
-                        
-                        # 更新统计信息
-                        stats = self.db_manager.get_statistics()
-                        status_text = f"总人员: {stats['total_persons']} | 真实身份: {stats['real_persons']} | 临时身份: {stats['temp_persons']}"
-                        status_label.config(text=status_text)
-                        
-                    except Exception as e:
-                        logging.error(f"加载人员数据失败: {str(e)}")
-                        import tkinter.messagebox as messagebox
-                        messagebox.showerror("错误", f"加载人员数据失败:\n{str(e)}")
-                
-                def on_person_select(event):
-                    """当选择人员时显示详细信息"""
-                    selection = tree.selection()
-                    if not selection:
-                        return
+                        if important_persons:
+                            messagebox.showinfo("刷新", f"已刷新重点关注人员列表，共 {len(important_persons)} 人")
                     
-                    try:
-                        # 获取选中的人员ID
-                        person_id = tree.item(selection[0])['values'][0]
-                        
-                        # 获取人员详细信息
-                        person_info = self.db_manager.get_person_by_id(person_id)
-                        if not person_info:
+                    # 初始加载数据
+                    refresh_list()
+                    
+                    if not self.db_manager.get_important_persons():
+                         # 没有重点关注人员
+                        no_data_label = Label(list_frame, text="当前没有重点关注人员\n请在人脸库管理器中设置重点关注人员", 
+                                             font=('Arial', 12), fg='gray')
+                        no_data_label.pack(expand=True)
+
+                    def remove_important():
+                        """取消选中人员的重点关注状态"""
+                        selection = tree.selection()
+                        if not selection:
+                            messagebox.showwarning("警告", "请先选择要取消重点关注的人员", parent=dialog)
                             return
                         
-                        # 显示人员信息
-                        info_text.delete(1.0, tk.END)
-                        info_content = f"""人员ID: {person_info['id']}
-姓名: {person_info['name']}
-身份证号: {person_info['id_card'] or '无'}
-真实姓名: {person_info['real_name'] or '无'}
-真实身份证号: {person_info['real_id_card'] or '无'}
-身份类型: {'临时身份' if person_info['is_temp'] else '真实身份'}
-创建时间: {person_info['created_time']}
-更新时间: {person_info['updated_time']}"""
+                        # 从Treeview中获取人员ID和姓名
+                        selected_item = tree.item(selection[0])
+                        person_id = selected_item['values'][0]
+                        person_name = selected_item['values'][1]
                         
-                        info_text.insert(1.0, info_content)
+                        # 再次确认操作
+                        result = messagebox.askyesno("确认操作", 
+                                                     f"确定要取消人员 '{person_name}' 的重点关注状态吗？\n\n此操作将刷新系统的人脸数据，可能会有短暂卡顿。",
+                                                     parent=dialog)
                         
-                        # 获取并显示人脸图片
-                        image_data = self.db_manager.get_face_image(person_id)
-                        if image_data:
+                        if result:
                             try:
-                                # 将二进制数据转换为PIL图像
-                                pil_img = Image.open(io.BytesIO(image_data))
+                                # 步骤1: 更新数据库
+                                success = self.db_manager.set_important_status(person_id, False)
                                 
-                                # 计算合适的显示尺寸
-                                display_width = 200
-                                display_height = 200
-                                
-                                # 保持宽高比
-                                img_width, img_height = pil_img.size
-                                ratio = min(display_width / img_width, display_height / img_height)
-                                new_width = int(img_width * ratio)
-                                new_height = int(img_height * ratio)
-                                
-                                pil_img = pil_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                                tk_img = ImageTk.PhotoImage(pil_img)
-                                
-                                # 更新图片显示
-                                image_label.config(image=tk_img, text="")
-                                image_label.image = tk_img  # 保持引用
-                                
+                                if success:
+                                    logging.info(f"已在数据库中取消 {person_name} (ID: {person_id}) 的重点关注状态。")
+                                    
+                                    # 步骤2: 强制重新加载内存中的人脸数据库，这是关键！
+                                    # 使用 after 以避免阻塞当前UI线程
+                                    self.root.after(100, lambda: self.show_loading_progress(
+                                        "正在更新人脸识别数据...",
+                                        self.reload_face_database
+                                    ))
+
+                                    # 步骤3: 从UI列表中移除该项
+                                    tree.delete(selection[0])
+                                    
+                                    messagebox.showinfo("成功", f"已取消 '{person_name}' 的重点关注状态。\n系统数据正在后台更新。", parent=dialog)
+                                else:
+                                    messagebox.showerror("数据库错误", "更新数据库失败，无法取消重点关注状态。", parent=dialog)
                             except Exception as e:
-                                image_label.config(image="", text=f"图片加载失败: {str(e)}")
-                        else:
-                            image_label.config(image="", text="无图片数据")
-                        
-                    except Exception as e:
-                        logging.error(f"显示人员详细信息失败: {str(e)}")
-                        info_text.delete(1.0, tk.END)
-                        info_text.insert(1.0, f"获取详细信息失败: {str(e)}")
-                
-                def delete_selected_person():
-                    """删除选中的人员"""
-                    selection = tree.selection()
-                    if not selection:
-                        import tkinter.messagebox as messagebox
-                        messagebox.showwarning("警告", "请先选择要删除的人员")
-                        return
+                                logging.error(f"取消重点关注时发生错误: {str(e)}")
+                                messagebox.showerror("程序错误", f"取消重点关注时发生内部错误: {str(e)}", parent=dialog)
+
+                    # 按钮框架
+                    button_frame = tk.Frame(main_frame)
+                    button_frame.pack(fill=tk.X, pady=(20, 0))
+
+                    # 使用 grid 布局来更精确地控制按钮位置
+                    button_frame.columnconfigure((0, 1, 2, 3), weight=1) # 让列平均分配空间
+
+                    # 按钮定义
+                    refresh_btn = tk.Button(button_frame, text="刷新列表", 
+                                          command=refresh_list, 
+                                          font=('Arial', 11), bg='#4CAF50', fg='white')
                     
-                    person_id = tree.item(selection[0])['values'][0]
-                    person_name = tree.item(selection[0])['values'][1]
+                    remove_btn = tk.Button(button_frame, text="取消重点关注", 
+                                         command=remove_important, # 直接调用函数
+                                         font=('Arial', 11), bg='#FF9800', fg='white')
                     
-                    # 确认删除
-                    import tkinter.messagebox as messagebox
-                    result = messagebox.askyesno("确认删除", f"确定要删除人员 '{person_name}' 吗？\n此操作不可恢复！")
+                    open_manager_btn = tk.Button(button_frame, text="打开人脸库", 
+                                               command=self.open_faces_folder, # 直接调用
+                                               font=('Arial', 11), bg='#2196F3', fg='white')
                     
-                    if result:
-                        try:
-                            if self.db_manager.delete_person(person_id):
-                                messagebox.showinfo("成功", f"已删除人员 '{person_name}'")
-                                load_person_data()  # 重新加载数据
-                            else:
-                                messagebox.showerror("错误", "删除失败")
-                        except Exception as e:
-                            messagebox.showerror("错误", f"删除失败: {str(e)}")
-                
-                def refresh_data():
-                    """刷新数据"""
-                    load_person_data()
-                
-                # 绑定选择事件
-                tree.bind('<<TreeviewSelect>>', on_person_select)
-                
-                # 按钮
-                ttk.Button(button_frame, text="刷新", command=refresh_data).pack(side=tk.LEFT, padx=5)
-                ttk.Button(button_frame, text="删除选中", command=delete_selected_person).pack(side=tk.LEFT, padx=5)
-                ttk.Button(button_frame, text="关闭", command=main_window.destroy).pack(side=tk.RIGHT, padx=5)
-                
-                # 状态栏
-                status_frame = ttk.Frame(main_frame)
-                status_frame.pack(fill=tk.X, pady=(10, 0))
-                
-                status_label = Label(status_frame, text="正在加载数据...", font=('Arial', 9))
-                status_label.pack(side=tk.LEFT)
-                
-                # 加载数据
-                load_person_data()
+                    close_btn = tk.Button(button_frame, text="关闭", 
+                                        command=dialog.destroy, 
+                                        font=('Arial', 11), width=10)
+
+                    # 将按钮放置到网格中
+                    refresh_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+                    remove_btn.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+                    open_manager_btn.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+                    close_btn.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
+
+                except Exception as e:
+                    logging.error(f"显示重点关注人员管理器失败: {str(e)}")
+                    messagebox.showerror("错误", f"显示重点关注人员管理器失败:\n{str(e)}")
             
-            # 在主线程中显示窗口
-            self.root.after(0, show_face_library)
+            self.root.after(0, show_important_persons_manager)
             
         except Exception as e:
-            logging.error(f"打开人脸库管理器失败: {str(e)}")
-            import tkinter.messagebox as messagebox
-            messagebox.showerror("错误", f"打开人脸库管理器失败:\n{str(e)}")
+            logging.error(f"管理重点关注人员失败: {str(e)}")
+            from tkinter import messagebox
+            messagebox.showerror("错误", f"管理重点关注人员失败:\n{str(e)}")
 
     def clear_all_temp_identities(self, icon=None, item=None):
         """清理所有临时身份（包括内存中的）"""
@@ -1101,15 +1059,42 @@ class TransparentFaceRecognizer:
  
     def quit_program(self):
         """退出程序"""
-        # 清理系统托盘图标
-        if hasattr(self, 'tray_icon') and self.tray_icon:
-            self.tray_icon.stop()
-        
-        self.root.quit() 
-        self.root.destroy() 
-        self.sct.close() 
-        cv2.destroyAllWindows() 
-        logging.info(" 程序已退出")
+        try:
+            logging.info("开始退出程序...")
+            # 清理系统托盘图标
+            if hasattr(self, 'tray_icon') and self.tray_icon:
+                self.tray_icon.stop()
+                logging.info("系统托盘图标已停止。")
+
+            # 检查并关闭主窗口
+            if hasattr(self, 'root'):
+                try:
+                    if self.root.winfo_exists():
+                        self.root.quit()
+                        self.root.destroy()
+                        logging.info("主窗口已销毁。")
+                except tk.TclError:
+                    # 窗口已经被销毁，忽略错误
+                    logging.warning("尝试销毁窗口时出错，可能已被销毁。")
+                    pass
+
+            # 关闭其他资源
+            if hasattr(self, 'sct'):
+                try:
+                    self.sct.close()
+                except Exception as e:
+                    logging.error(f"关闭截图工具时出错: {str(e)}")
+
+            cv2.destroyAllWindows()
+            logging.info("所有OpenCV窗口已关闭。")
+
+        except Exception as e:
+            logging.error(f"退出程序时发生未预料的错误: {str(e)}")
+        finally:
+            # 无论如何都尝试强制退出
+            logging.info("程序已退出，正在强制终止进程。")
+            import os
+            os._exit(0)
  
     def set_window_clickthrough(self):
         """设置窗口可穿透点击"""
@@ -1228,10 +1213,37 @@ class TransparentFaceRecognizer:
         return img 
  
     def show_face_info(self, name, idx):
-        """显示已知人脸信息"""
+        """显示已知人脸信息（仅重点关注人员）"""
         # 过滤掉临时身份，不显示unknown1、unknown2等临时身份的弹窗
         if name.startswith('unknown') or name.startswith('TEMP'):
             logging.debug(f"跳过临时身份弹窗显示: {name}")
+            return
+        
+        # 检查是否为重点关注人员
+        try:
+            # 从数据库获取人员信息
+            person_info = None
+            if idx < len(self.face_name_known_list):
+                # 通过完整的人员名称查找人员信息
+                person_name = self.face_name_known_list[idx]
+                
+                # 解析姓名和身份证号
+                if '_' in person_name and person_name.count('_') >= 1:
+                    name_parts = person_name.split('_', 1)
+                    display_name = name_parts[0]
+                    id_number = name_parts[1]
+                    person_info = self.db_manager.get_person_by_name_id(display_name, id_number)
+                else:
+                    # 如果没有身份证号，只通过姓名查找
+                    person_info = self.db_manager.get_person_by_name(person_name)
+            
+            # 如果不是重点关注人员，不显示弹窗
+            if not person_info or not person_info.get('is_important', False):
+                logging.debug(f"跳过非重点关注人员弹窗显示: {name}")
+                return
+                
+        except Exception as e:
+            logging.error(f"检查重点关注状态时出错: {str(e)}")
             return
             
         if not self.show_popup or name in self.shown_faces: 
@@ -1241,7 +1253,7 @@ class TransparentFaceRecognizer:
  
         def show():
             popup = Toplevel(self.root) 
-            popup.title(f"识别到: {name}")
+            popup.title(f"⚠️ 重点关注人员: {name}")
             popup.attributes("-topmost", True)
             
             # 从数据库获取图像数据
@@ -1271,7 +1283,7 @@ class TransparentFaceRecognizer:
                 if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
                     display_name = self.real_name_known_list[idx]
                 
-                info = f"姓名: {display_name}\n身份证号: {id_number}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                info = f"⚠️ 重点关注人员\n姓名: {display_name}\n身份证号: {id_number}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
             else:
                 # 旧格式或其他格式
                 display_name = name
@@ -1280,16 +1292,29 @@ class TransparentFaceRecognizer:
                 if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
                     display_name = self.real_name_known_list[idx]
                 
-                info = f"姓名: {display_name}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                info = f"⚠️ 重点关注人员\n姓名: {display_name}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
                 
-            Label(popup, text=info, font=('Arial', 12)).pack(pady=10)
+            Label(popup, text=info, font=('Arial', 12), fg='red').pack(pady=10)
             
             def close():
-                self.shown_faces.discard(name) 
-                popup.destroy() 
+                """关闭弹窗并清理状态"""
+                try:
+                    self.shown_faces.discard(name) 
+                    logging.debug(f"已从shown_faces中移除: {name}")
+                except Exception as e:
+                    logging.warning(f"从shown_faces移除时出错: {e}")
                 
-            tk.Button(popup, text="关闭", command=close).pack(pady=10)
-            popup.after(5000, close)
+                try:
+                    if popup and popup.winfo_exists():
+                        popup.destroy() 
+                except Exception as e:
+                    logging.warning(f"销毁弹窗时出错: {e}")
+            
+            # 绑定窗口关闭事件，确保无论通过什么方式关闭都能清理状态
+            popup.protocol("WM_DELETE_WINDOW", close)
+            
+            tk.Button(popup, text="关闭", command=close, bg='red', fg='white').pack(pady=10)
+            popup.after(10000, close)  # 重点关注人员弹窗显示10秒
  
         threading.Thread(target=show).start()
  
@@ -1451,7 +1476,7 @@ class TransparentFaceRecognizer:
             
             if match_result:
                 # 找到匹配的人脸
-                person_id, distance, person_name, real_name = match_result
+                person_id, distance, person_name, real_name, is_important = match_result
                 
                 # 优先使用real_name，如果没有则使用person_name
                 display_name = real_name if real_name else person_name
@@ -1465,14 +1490,68 @@ class TransparentFaceRecognizer:
                 if person_name in self.face_name_known_list:
                     idx = self.face_name_known_list.index(person_name)
                     if name not in self.shown_faces and self.show_popup: 
-                        self.root.after(100, lambda n=name, i=idx: self.show_face_info(n, i))
+                        # 如果是重点关注人员，显示特殊弹窗
+                        if is_important:
+                            self.root.after(100, lambda n=name, i=idx, p_id=person_id: self.show_important_person_popup(n, i, p_id))
+                        else:
+                            self.root.after(100, lambda n=name, i=idx: self.show_face_info(n, i))
             else:
-                # 未找到匹配的人脸，标记为未知
-                name = "Unknown"
-                known = False
-                logging.debug(f"检测到未知人脸")
-                # 未知人脸，尝试添加到处理 
-                self.create_new_face_data(img, rect, shape, feature)
+                # 数据库中没有找到，检查内存中的特征（包括刚刚更新的）
+                min_distance = float('inf')
+                best_match_idx = -1
+                
+                for i, stored_feature in enumerate(self.face_feature_known_list):
+                    distance = self.return_euclidean_distance(feature, stored_feature)
+                    if distance < min_distance and distance < self.recognition_threshold:
+                        min_distance = distance
+                        best_match_idx = i
+                
+                if best_match_idx >= 0:
+                    # 在内存中找到匹配的人脸
+                    person_name = self.face_name_known_list[best_match_idx]
+                    real_name = self.real_name_known_list[best_match_idx] if best_match_idx < len(self.real_name_known_list) else None
+                    
+                    # 优先使用real_name，如果没有则使用person_name
+                    display_name = real_name if real_name else person_name
+                    name = display_name
+                    known = True
+                    
+                    #logging.info(f"在内存中识别到人脸: {name} (距离: {min_distance:.3f})")
+                    
+                    if name not in self.shown_faces and self.show_popup:
+                        # 检查是否为重点关注人员
+                        is_important = False
+                        try:
+                            # 从数据库获取人员信息以检查重点关注状态
+                            if '_' in person_name:
+                                name_parts = person_name.split('_', 1)
+                                person_info = self.db_manager.get_person_by_name_id(name_parts[0], name_parts[1])
+                                if person_info:
+                                    is_important = person_info.get('is_important', False)
+                        except:
+                            pass
+                        
+                        if is_important:
+                            # 获取person_id用于重点关注弹窗
+                            person_id = None
+                            try:
+                                if '_' in person_name:
+                                    name_parts = person_name.split('_', 1)
+                                    person_info = self.db_manager.get_person_by_name_id(name_parts[0], name_parts[1])
+                                    if person_info:
+                                        person_id = person_info['id']
+                            except:
+                                pass
+                            self.root.after(100, lambda n=name, i=best_match_idx, p_id=person_id: self.show_important_person_popup(n, i, p_id))
+                        else:
+                            self.root.after(100, lambda n=name, i=best_match_idx: self.show_face_info(n, i))
+                else:
+                    # 未找到匹配的人脸，标记为未知
+                    name = "Unknown"
+                    known = False
+                    logging.debug(f"检测到未知人脸")
+                    # 未知人脸，尝试添加到处理 
+                    self.create_new_face_data(img, rect, shape, feature)
                 
             # 更新当前帧数据 
             self.current_frame_face_feature_list.append(feature) 
@@ -1904,7 +1983,7 @@ class TransparentFaceRecognizer:
             # 创建密码确认对话框
             dialog = Toplevel(self.root)
             dialog.title("清空数据库")
-            dialog.geometry("450x350")
+            dialog.geometry("450x500")
             dialog.attributes("-topmost", True)
             dialog.grab_set()
             
@@ -1917,7 +1996,8 @@ class TransparentFaceRecognizer:
             warning_label.pack(pady=(0, 10))
             
             # 警告信息
-            warning_text = """此操作将清空所有数据：
+            warning_text = """
+此操作将清空所有数据：
 • 所有人员信息
 • 所有人脸特征
 • 所有人脸图像
@@ -2018,6 +2098,101 @@ class TransparentFaceRecognizer:
         
         # 在主线程中显示对话框
         self.root.after(0, show_clear_dialog)
+
+    def show_important_person_popup(self, name, idx, person_id):
+        """显示重点关注人员信息弹窗"""
+        # 过滤掉临时身份，不显示unknown1、unknown2等临时身份的弹窗
+        if name.startswith('unknown') or name.startswith('TEMP'):
+            logging.debug(f"跳过临时身份弹窗显示: {name}")
+            return
+            
+        if not self.show_popup or name in self.shown_faces: 
+            return 
+            
+        self.shown_faces.add(name) 
+ 
+        def show():
+            popup = Toplevel(self.root) 
+            popup.title(f"⚠️ 重点关注人员: {name}")
+            popup.attributes("-topmost", True)
+            
+            # 从数据库获取图像数据
+            image_data = self.face_image_data_list[idx] if idx < len(self.face_image_data_list) else None
+            
+            if image_data: 
+                try:
+                    # 将二进制数据转换为PIL图像
+                    pil_img = Image.open(io.BytesIO(image_data)).resize((200, 200))
+                    tk_img = ImageTk.PhotoImage(pil_img)
+                    label_img = Label(popup, image=tk_img)
+                    label_img.image = tk_img 
+                    label_img.pack(pady=10) 
+                except Exception as e:
+                    Label(popup, text=f"图片加载失败: {str(e)}").pack(pady=10)
+            else:
+                Label(popup, text="无图片").pack(pady=10)
+            
+            # 解析姓名和身份证号
+            if '_' in name and name.count('_') >= 1:
+                # 新格式: 姓名_身份证号
+                name_parts = name.split('_', 1)
+                display_name = name_parts[0]
+                id_number = name_parts[1]
+                
+                # 如果有真实姓名，优先显示真实姓名
+                if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
+                    display_name = self.real_name_known_list[idx]
+                
+                info = f"⚠️ 重点关注人员\n姓名: {display_name}\n身份证号: {id_number}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            else:
+                # 旧格式或其他格式
+                display_name = name
+                
+                # 如果有真实姓名，优先显示真实姓名
+                if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
+                    display_name = self.real_name_known_list[idx]
+                
+                info = f"⚠️ 重点关注人员\n姓名: {display_name}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                
+            Label(popup, text=info, font=('Arial', 12), fg='red').pack(pady=10)
+            
+            def close():
+                """关闭弹窗并清理状态"""
+                try:
+                    self.shown_faces.discard(name)
+                    logging.debug(f"已从shown_faces中移除: {name}")
+                except Exception as e:
+                    logging.warning(f"从shown_faces移除时出错: {e}")
+                
+                try:
+                    if popup and popup.winfo_exists():
+                        popup.destroy() 
+                except Exception as e:
+                    logging.warning(f"销毁弹窗时出错: {e}")
+            
+            # 绑定窗口关闭事件，确保无论通过什么方式关闭都能清理状态
+            popup.protocol("WM_DELETE_WINDOW", close)
+            
+            tk.Button(popup, text="关闭", command=close, bg='red', fg='white').pack(pady=10)
+            popup.after(10000, close)  # 重点关注人员弹窗显示10秒
+ 
+        threading.Thread(target=show).start()
+
+    def reset_popup_status(self, icon=None, item=None):
+        """重置弹窗状态，清空已弹窗人员列表"""
+        try:
+            count = len(self.shown_faces)
+            self.shown_faces.clear()
+            logging.info(f"已重置弹窗状态，清空了 {count} 个已弹窗人员记录")
+            
+            # 显示确认消息
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo("重置完成", f"已重置弹窗状态\n清空了 {count} 个已弹窗人员记录\n重点关注人员将可以重新弹窗")
+            
+        except Exception as e:
+            logging.error(f"重置弹窗状态时出错: {str(e)}")
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("错误", f"重置弹窗状态失败: {str(e)}")
 
 def detect_gpu_availability():
     """检测GPU可用性"""

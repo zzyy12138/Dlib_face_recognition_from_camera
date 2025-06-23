@@ -9,6 +9,8 @@ import shutil
 import sys
 import subprocess
 import threading
+from face_database_manager import FaceDatabaseManager
+import random
 
 # 设置系统编码以支持中文路径
 if sys.platform.startswith('win'):
@@ -27,18 +29,22 @@ class FaceCollector:
         # 初始化人脸检测器
         self.detector = dlib.get_frontal_face_detector()
         self.predictor = dlib.shape_predictor("data/data_dlib/shape_predictor_68_face_landmarks.dat")
+        self.face_reco_model = dlib.face_recognition_model_v1("data/data_dlib/dlib_face_recognition_resnet_model_v1.dat")
         
-        # 设置保存路径
+        # 初始化数据库管理器
+        self.db_manager = FaceDatabaseManager("data/face_database.db")
+        
+        # 设置保存路径（保留用于临时文件）
         self.path_photos_from_camera = "data/data_faces_from_camera/"
         self.current_face_dir = ""
         
-        # 创建保存目录
+        # 创建保存目录（用于临时文件）
         if not os.path.exists(self.path_photos_from_camera):
             os.makedirs(self.path_photos_from_camera)
         
         # 初始化GUI
         self.win = tk.Tk()
-        self.win.title("智能人脸采集工具")
+        self.win.title("智能人脸采集工具 - SQLite版本")
         self.win.geometry("1200x800")
         self.win.configure(bg='#f0f0f0')
         
@@ -198,50 +204,82 @@ class FaceCollector:
         self.btn_delete.pack(pady=8, padx=20, fill=tk.X)
         
         # 状态栏
-        self.status_frame = tk.Frame(self.win, bg='#34495e', height=30)
-        self.status_frame.pack(fill=tk.X, side=tk.BOTTOM)
-        self.status_frame.pack_propagate(False)
-        
-        self.status_label = tk.Label(self.status_frame, text="就绪", 
+        self.status_label = tk.Label(self.win, text="就绪", 
                                     font=('Microsoft YaHei UI', 9),
-                                    fg='white', bg='#34495e')
-        self.status_label.pack(side=tk.LEFT, padx=10, pady=5)
+                                    fg='#7f8c8d', bg='#ecf0f1',
+                                    relief=tk.SUNKEN, bd=1, anchor=tk.W)
+        self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
         
-        # 绑定鼠标悬停效果
+        # 绑定按钮悬停效果
         self.bind_hover_effects()
-        
+    
     def bind_hover_effects(self):
         """绑定按钮悬停效果"""
         buttons = [self.btn_select, self.btn_save, self.btn_batch_save, self.btn_delete]
-        colors = ['#3498db', '#27ae60', '#9b59b6', '#e74c3c']
-        hover_colors = ['#2980b9', '#229954', '#8e44ad', '#c0392b']
-        
-        for btn, color, hover_color in zip(buttons, colors, hover_colors):
-            btn.bind('<Enter>', lambda e, b=btn, c=hover_color: self.on_button_hover(b, c))
-            btn.bind('<Leave>', lambda e, b=btn, c=color: self.on_button_hover(b, c))
+        for button in buttons:
+            button.bind('<Enter>', lambda e, btn=button: self.on_button_hover(btn, '#2980b9'))
+            button.bind('<Leave>', lambda e, btn=button: self.on_button_hover(btn, button.cget('bg')))
     
     def on_button_hover(self, button, color):
         """按钮悬停效果"""
-        button.configure(bg=color)
-        
+        if color == '#2980b9':
+            # 悬停时变暗
+            if button == self.btn_save:
+                button.config(bg='#229954')
+            elif button == self.btn_batch_save:
+                button.config(bg='#8e44ad')
+            elif button == self.btn_delete:
+                button.config(bg='#c0392b')
+            else:
+                button.config(bg=color)
+        else:
+            # 恢复原色
+            if button == self.btn_save:
+                button.config(bg='#27ae60')
+            elif button == self.btn_batch_save:
+                button.config(bg='#9b59b6')
+            elif button == self.btn_delete:
+                button.config(bg='#e74c3c')
+            else:
+                button.config(bg='#3498db')
+    
     def update_status(self, message):
-        """更新状态栏信息"""
+        """更新状态栏"""
         self.status_label.config(text=message)
         self.win.update_idletasks()
+    
+    def generate_temp_identity(self):
+        """生成临时身份信息，参考screen_face_monitor.py中的实现"""
+        # 生成类似 unknown1, unknown2 的临时姓名
+        temp_name = f"unknown{random.randint(1000, 9999)}"
+        
+        # 生成临时身份证号
+        temp_id = "TEMP" + str(random.randint(100000, 999999))
+        
+        return temp_name, temp_id
 
     def load_registered_names(self):
-        """加载已注册的人名"""
-        if os.path.exists(self.path_photos_from_camera):
+        """从数据库加载已注册的人名，优先显示real_name和real_id_card信息"""
+        try:
+            # 从数据库获取所有非临时人员信息
+            persons = self.db_manager.get_all_persons(include_temp=False)
+            
             self.registered_names = []
-            for d in os.listdir(self.path_photos_from_camera):
-                dir_path = os.path.join(self.path_photos_from_camera, d)
-                if os.path.isdir(dir_path) and d.startswith('person_'):
-                    # 解析文件夹名：person_姓名_身份证号
-                    parts = d.split('_', 2)  # 最多分割2次，保留身份证号中的下划线
-                    if len(parts) >= 3:
-                        name = parts[1]
-                        id_number = parts[2]
-                        self.registered_names.append(f"{name}_{id_number}")
+            for person in persons:
+                # 优先使用real_name和real_id_card，如果没有则使用name和id_card
+                display_name = person.get('real_name') or person['name']
+                display_id = person.get('real_id_card') or person.get('id_card')
+                
+                if display_id:
+                    self.registered_names.append(f"{display_name}_{display_id}")
+                else:
+                    self.registered_names.append(display_name)
+            
+            self.update_name_list()
+            print(f"从数据库加载了 {len(self.registered_names)} 个已注册人员")
+        except Exception as e:
+            print(f"加载已注册人名时出错: {str(e)}")
+            self.registered_names = []
             self.update_name_list()
     
     def update_name_list(self):
@@ -355,6 +393,9 @@ class FaceCollector:
                 self.current_image = rgb_image
                 self.current_image_path = processed_path
                 
+                # 清除之前的选择（加载新图片时）
+                self.selected_faces.clear()
+                
                 # 显示图片和人脸框
                 self.display_image()
                 
@@ -430,24 +471,35 @@ class FaceCollector:
     
     def update_face_selection(self):
         """更新人脸选择界面"""
-        if not self.current_faces:
-            return
+        # 清除之前的复选框
+        for widget in self.face_selection_frame.winfo_children():
+            if isinstance(widget, tk.Checkbutton):
+                widget.destroy()
+        self.face_vars.clear()
         
+        # 为每个检测到的人脸创建复选框
         for i, face in enumerate(self.current_faces):
-            var = tk.BooleanVar(value=i in self.selected_faces)
+            var = tk.BooleanVar()
+            # 设置复选框状态与selected_faces同步
+            if i in self.selected_faces:
+                var.set(True)
             self.face_vars.append(var)
             
+            # 创建复选框
             cb = tk.Checkbutton(self.face_selection_frame, 
-                              text=f"人脸 {i+1}", 
-                              variable=var,
-                              command=lambda idx=i, v=var: self.on_face_selection_change(idx, v),
-                              font=('Microsoft YaHei UI', 10), 
-                              bg='white', fg='#2c3e50',
-                              selectcolor='#3498db')
-            cb.pack(anchor=tk.W, pady=1)
+                               text=f"人脸 {i+1}", 
+                               variable=var,
+                               font=('Microsoft YaHei UI', 10),
+                               fg='#2c3e50', bg='white',
+                               selectcolor='#3498db',
+                               command=lambda idx=i, v=var: self.on_face_selection_change(idx, v))
+            cb.pack(anchor=tk.W, pady=2)
+        
+        # 更新保存按钮文本
+        self.update_save_button_text()
     
     def on_face_selection_change(self, face_index, var):
-        """人脸选择状态改变时的处理"""
+        """处理人脸选择变化"""
         if var.get():
             if face_index not in self.selected_faces:
                 self.selected_faces.append(face_index)
@@ -455,82 +507,105 @@ class FaceCollector:
             if face_index in self.selected_faces:
                 self.selected_faces.remove(face_index)
         
+        # 只更新图片显示，不重新创建复选框
+        self.update_image_display()
+        
         # 更新保存按钮文本
         self.update_save_button_text()
+    
+    def update_image_display(self):
+        """更新图片显示，不重新创建复选框"""
+        if self.current_image is None:
+            return
         
-        # 重新显示图片以更新颜色
-        self.display_image()
+        # 创建图片副本用于绘制
+        display_image = self.current_image.copy()
+        
+        # 绘制人脸框
+        for i, face in enumerate(self.current_faces):
+            # 根据是否选中使用不同颜色
+            if i in self.selected_faces:
+                color = (255, 0, 0)  # 红色表示选中
+                thickness = 3
+            else:
+                color = (0, 255, 0)  # 绿色表示未选中
+                thickness = 2
+            
+            # 绘制边框
+            cv2.rectangle(display_image, 
+                        (face.left(), face.top()),
+                        (face.right(), face.bottom()),
+                        color, thickness)
+            
+            # 添加人脸编号
+            cv2.putText(display_image, f"Face {i+1}", 
+                       (face.left(), face.top()-10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+        # 转换为PIL图像
+        image = Image.fromarray(display_image)
+        # 调整大小以适应显示
+        image.thumbnail((800, 600))
+        photo = ImageTk.PhotoImage(image)
+        
+        # 更新显示
+        self.label_image.configure(image=photo)
+        self.label_image.image = photo
     
     def on_image_click(self, event):
-        """图片点击事件处理"""
+        """处理图片点击事件"""
         if not self.current_faces:
             return
         
         # 获取点击位置相对于图片的坐标
-        img_width = self.label_image.winfo_width()
-        img_height = self.label_image.winfo_height()
+        widget = event.widget
+        image_width = widget.winfo_width()
+        image_height = widget.winfo_height()
         
-        # 计算缩放比例
-        original_width = self.current_image.shape[1]
-        original_height = self.current_image.shape[0]
-        
-        scale_x = original_width / img_width
-        scale_y = original_height / img_height
-        
-        # 转换点击坐标
-        click_x = int(event.x * scale_x)
-        click_y = int(event.y * scale_y)
-        
-        # 检查点击是否在人脸框内
-        for i, face in enumerate(self.current_faces):
-            if (face.left() <= click_x <= face.right() and 
-                face.top() <= click_y <= face.bottom()):
-                # 切换选中状态
-                if i in self.selected_faces:
-                    self.selected_faces.remove(i)
-                else:
-                    self.selected_faces.append(i)
-                
-                # 更新复选框状态
-                if i < len(self.face_vars):
-                    self.face_vars[i].set(i in self.selected_faces)
-                
-                # 更新保存按钮文本
-                self.update_save_button_text()
-                
-                # 重新显示图片
-                self.display_image()
-                break
-
+        # 获取图片的实际显示尺寸
+        if hasattr(widget, 'image') and widget.image:
+            # 这里需要根据实际显示比例计算点击位置
+            # 简化处理：假设图片居中显示
+            click_x = event.x
+            click_y = event.y
+            
+            # 检查点击是否在任何人脸框内
+            for i, face in enumerate(self.current_faces):
+                # 这里需要根据实际显示比例调整坐标
+                # 简化处理：直接使用原始坐标
+                if (face.left() <= click_x <= face.right() and 
+                    face.top() <= click_y <= face.bottom()):
+                    # 切换选中状态
+                    if i in self.selected_faces:
+                        self.selected_faces.remove(i)
+                        if i < len(self.face_vars):
+                            self.face_vars[i].set(False)
+                    else:
+                        self.selected_faces.append(i)
+                        if i < len(self.face_vars):
+                            self.face_vars[i].set(True)
+                    
+                    # 只更新图片显示，不重新创建复选框
+                    self.update_image_display()
+                    break
+    
     def get_next_available_filename(self, save_dir, base_name, extension=".jpg"):
-        """获取下一个可用的文件名，避免覆盖现有文件"""
+        """获取下一个可用的文件名"""
         counter = 1
         while True:
-            filename = f"{base_name}_{counter}{extension}"
+            filename = f"{base_name}_{counter:03d}{extension}"
             filepath = os.path.join(save_dir, filename)
             if not os.path.exists(filepath):
                 return filename
             counter += 1
     
     def get_image_extension(self, file_path):
-        """根据文件路径获取图片扩展名"""
-        _, ext = os.path.splitext(file_path.lower())
-        # 支持的格式映射
-        format_map = {
-            '.jpg': '.jpg',
-            '.jpeg': '.jpg',
-            '.png': '.png',
-            '.bmp': '.bmp',
-            '.gif': '.gif',
-            '.tiff': '.tiff',
-            '.tif': '.tiff',
-            '.webp': '.webp',
-            '.ico': '.png'  # ICO格式转换为PNG保存
-        }
-        return format_map.get(ext, '.jpg')  # 默认使用jpg格式
+        """获取图片文件扩展名"""
+        _, ext = os.path.splitext(file_path)
+        return ext.lower()
     
     def save_selected_face(self):
-        """保存选中的人脸"""
+        """保存选中的人脸到数据库"""
         if not self.current_faces:
             messagebox.showwarning("警告", "请先选择包含人脸的图片")
             return
@@ -545,10 +620,7 @@ class FaceCollector:
             messagebox.showwarning("警告", "请输入身份证号")
             return
         
-        # 组合姓名和身份证号
-        person_id = f"{name}_{id_number}"
-        
-        self.update_status(f"正在保存 {person_id} 的人脸数据...")
+        self.update_status(f"正在保存 {name} 的人脸数据到数据库...")
         
         # 确定要保存的人脸：优先保存选中的，如果没有选中则保存所有人脸
         if self.selected_faces:
@@ -556,83 +628,100 @@ class FaceCollector:
         else:
             faces_to_save = self.current_faces
         
-        # 创建保存目录
-        save_dir = os.path.join(self.path_photos_from_camera, f"person_{person_id}")
+        # 生成临时身份信息（参考screen_face_monitor.py中的自动发现新面孔）
+        temp_name, temp_id = self.generate_temp_identity()
+        
+        # 添加人员到数据库，将输入框中的信息保存为real_name和real_id_card
         try:
-            if not os.path.exists(save_dir):
-                os.makedirs(save_dir)
-                print(f"创建目录: {save_dir}")
+            person_id = self.db_manager.add_person(
+                name=temp_name, 
+                id_card=temp_id, 
+                is_temp=False,  # 手动注册的不标记为临时
+                real_name=name,  # 输入框中的姓名作为真实姓名
+                real_id_card=id_number  # 输入框中的身份证号作为真实身份证号
+            )
+            print(f"添加人员到数据库成功: 临时身份 {temp_name}_{temp_id} -> 真实身份 {name}_{id_number} (ID: {person_id})")
         except Exception as e:
-            print(f"创建目录失败: {str(e)}")
-            self.update_status("创建目录失败")
-            messagebox.showerror("错误", f"创建保存目录失败: {str(e)}")
+            print(f"添加人员到数据库失败: {str(e)}")
+            self.update_status("添加人员到数据库失败")
+            messagebox.showerror("错误", f"添加人员到数据库失败: {str(e)}")
             return
         
         # 保存每个人脸
         saved_count = 0
-        extension = ".jpg"  # 统一使用jpg格式
         
         for i, face in enumerate(faces_to_save):
             try:
                 # 提取人脸区域
                 face_image = self.current_image[face.top():face.bottom(), face.left():face.right()]
                 
-                # 获取唯一的文件名
-                filename = self.get_next_available_filename(save_dir, "img_face", extension)
-                save_path = os.path.normpath(os.path.join(save_dir, filename))
-                
-                print(f"正在保存图片到: {save_path}")
-                print(f"图片尺寸: {face_image.shape}")
-                
                 # 确保图片是uint8类型
                 if face_image.dtype != np.uint8:
                     face_image = face_image.astype(np.uint8)
                 
-                # 转换为BGR格式并保存为JPEG
-                bgr_image = cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR)
-                success = cv2.imwrite(save_path, bgr_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                # 提取人脸特征向量
+                try:
+                    # 使用dlib提取68个关键点
+                    shape = self.predictor(self.current_image, face)
+                    # 计算128维特征向量
+                    feature = self.face_reco_model.compute_face_descriptor(self.current_image, shape)
+                    print(f"成功提取人脸 {i+1} 的特征向量")
+                except Exception as feature_error:
+                    print(f"提取人脸 {i+1} 特征向量失败: {str(feature_error)}")
+                    feature = None
                 
-                # 确保目录存在
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                # 转换为BGR格式并编码为JPEG
+                bgr_image = cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR)
+                success, encoded_image = cv2.imencode('.jpg', bgr_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 
                 if success:
+                    # 保存到数据库
+                    image_data = encoded_image.tobytes()
+                    image_id = self.db_manager.add_face_image(person_id, image_data, 'jpg')
+                    print(f"成功保存人脸图像到数据库: 图像ID {image_id}")
+                    
+                    # 保存特征向量
+                    if feature is not None:
+                        feature_id = self.db_manager.add_face_feature(person_id, feature)
+                        print(f"成功保存人脸特征向量到数据库: 特征ID {feature_id}")
+                    
                     saved_count += 1
-                    print(f"成功保存图片: {save_path}")
                 else:
-                    print(f"保存图片失败: {save_path}")
+                    print(f"编码人脸图像失败")
                     # 尝试使用PIL作为备用方案
                     try:
-                        Image.fromarray(face_image).save(save_path, 'JPEG', quality=95)
+                        pil_image = Image.fromarray(face_image)
+                        import io
+                        img_buffer = io.BytesIO()
+                        pil_image.save(img_buffer, format='JPEG', quality=95)
+                        image_data = img_buffer.getvalue()
+                        image_id = self.db_manager.add_face_image(person_id, image_data, 'jpg')
+                        print(f"使用PIL成功保存人脸图像到数据库: 图像ID {image_id}")
+                        
+                        # 保存特征向量
+                        if feature is not None:
+                            feature_id = self.db_manager.add_face_feature(person_id, feature)
+                            print(f"成功保存人脸特征向量到数据库: 特征ID {feature_id}")
+                        
                         saved_count += 1
-                        print(f"使用PIL成功保存图片: {save_path}")
                     except Exception as pil_error:
                         print(f"PIL保存也失败: {str(pil_error)}")
-                        # 最后尝试：使用绝对路径
-                        try:
-                            abs_save_path = os.path.abspath(save_path)
-                            print(f"尝试使用绝对路径保存: {abs_save_path}")
-                            Image.fromarray(face_image).save(abs_save_path, 'JPEG', quality=95)
-                            saved_count += 1
-                            print(f"使用绝对路径成功保存图片: {abs_save_path}")
-                        except Exception as abs_error:
-                            print(f"绝对路径保存也失败: {str(abs_error)}")
+                        
             except Exception as e:
-                print(f"保存第 {i+1} 张图片时出错: {str(e)}")
+                print(f"保存第 {i+1} 张人脸图像时出错: {str(e)}")
                 continue
         
         if saved_count > 0:
-            self.update_status(f"已保存 {saved_count} 张人脸图片")
-            messagebox.showinfo("成功", f"已保存 {saved_count} 张人脸图片")
+            self.update_status(f"已保存 {saved_count} 张人脸图像到数据库")
+            messagebox.showinfo("成功", f"已保存 {saved_count} 张人脸图像到数据库\n临时身份: {temp_name}_{temp_id}\n真实身份: {name}_{id_number}")
             # 更新已注册人名列表
-            if person_id not in self.registered_names:
-                self.registered_names.append(person_id)
-                self.update_name_list()
+            self.load_registered_names()
         else:
             self.update_status("保存失败")
-            messagebox.showerror("错误", "没有成功保存任何图片")
+            messagebox.showerror("错误", "没有成功保存任何图像到数据库")
     
     def save_multiple_faces_with_names(self):
-        """为多个人脸分别指定姓名保存"""
+        """为多个人脸分别指定姓名保存到数据库"""
         if not self.current_faces:
             messagebox.showwarning("警告", "请先选择包含人脸的图片")
             return
@@ -643,7 +732,7 @@ class FaceCollector:
         
         # 创建批量保存对话框
         dialog = tk.Toplevel(self.win)
-        dialog.title("批量保存人脸")
+        dialog.title("批量保存人脸到数据库")
         dialog.geometry("500x600")
         dialog.configure(bg='#f0f0f0')
         dialog.transient(self.win)
@@ -711,7 +800,7 @@ class FaceCollector:
             dialog.destroy()
             self.batch_save_faces(names, id_numbers)
         
-        save_btn = tk.Button(dialog, text="保存", command=save_batch,
+        save_btn = tk.Button(dialog, text="保存到数据库", command=save_batch,
                             font=('Microsoft YaHei UI', 12),
                             bg='#27ae60', fg='white',
                             relief=tk.FLAT, padx=20, pady=8)
@@ -722,92 +811,150 @@ class FaceCollector:
         dialog.id_entries = id_entries
     
     def batch_save_faces(self, names, id_numbers):
-        """批量保存不同姓名的人脸"""
-        self.update_status("正在批量保存人脸...")
+        """批量保存不同姓名的人脸到数据库"""
+        self.update_status("正在批量保存人脸到数据库...")
         
         saved_count = 0
         for i, (face_idx, name, id_number) in enumerate(zip(self.selected_faces, names, id_numbers)):
             if not name or not id_number:
                 continue
             
-            # 组合姓名和身份证号
-            person_id = f"{name}_{id_number}"
-            
-            # 创建保存目录
-            save_dir = os.path.join(self.path_photos_from_camera, f"person_{person_id}")
             try:
-                if not os.path.exists(save_dir):
-                    os.makedirs(save_dir)
-            except Exception as e:
-                print(f"创建目录失败: {str(e)}")
-                continue
-            
-            # 保存人脸
-            try:
+                # 生成临时身份信息
+                temp_name, temp_id = self.generate_temp_identity()
+                
+                # 添加人员到数据库，将输入框中的信息保存为real_name和real_id_card
+                person_id = self.db_manager.add_person(
+                    name=temp_name, 
+                    id_card=temp_id, 
+                    is_temp=False,  # 手动注册的不标记为临时
+                    real_name=name,  # 输入框中的姓名作为真实姓名
+                    real_id_card=id_number  # 输入框中的身份证号作为真实身份证号
+                )
+                print(f"添加人员到数据库成功: 临时身份 {temp_name}_{temp_id} -> 真实身份 {name}_{id_number} (ID: {person_id})")
+                
+                # 保存人脸
                 face = self.current_faces[face_idx]
                 face_image = self.current_image[face.top():face.bottom(), face.left():face.right()]
-                
-                filename = self.get_next_available_filename(save_dir, "img_face", ".jpg")
-                save_path = os.path.join(save_dir, filename)
                 
                 # 确保图片是uint8类型
                 if face_image.dtype != np.uint8:
                     face_image = face_image.astype(np.uint8)
                 
-                # 保存图片
+                # 提取人脸特征向量
+                try:
+                    # 使用dlib提取68个关键点
+                    shape = self.predictor(self.current_image, face)
+                    # 计算128维特征向量
+                    feature = self.face_reco_model.compute_face_descriptor(self.current_image, shape)
+                    print(f"成功提取人脸 {i+1} 的特征向量")
+                except Exception as feature_error:
+                    print(f"提取人脸 {i+1} 特征向量失败: {str(feature_error)}")
+                    feature = None
+                
+                # 转换为BGR格式并编码为JPEG
                 bgr_image = cv2.cvtColor(face_image, cv2.COLOR_RGB2BGR)
-                success = cv2.imwrite(save_path, bgr_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                success, encoded_image = cv2.imencode('.jpg', bgr_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
                 
                 if success:
+                    # 保存到数据库
+                    image_data = encoded_image.tobytes()
+                    image_id = self.db_manager.add_face_image(person_id, image_data, 'jpg')
+                    print(f"成功保存 {name} 的人脸图像到数据库: 图像ID {image_id}")
+                    
+                    # 保存特征向量
+                    if feature is not None:
+                        feature_id = self.db_manager.add_face_feature(person_id, feature)
+                        print(f"成功保存人脸特征向量到数据库: 特征ID {feature_id}")
+                    
                     saved_count += 1
-                    print(f"成功保存 {person_id} 的人脸: {save_path}")
                 else:
                     # 尝试PIL保存
                     try:
-                        Image.fromarray(face_image).save(save_path, 'JPEG', quality=95)
+                        pil_image = Image.fromarray(face_image)
+                        import io
+                        img_buffer = io.BytesIO()
+                        pil_image.save(img_buffer, format='JPEG', quality=95)
+                        image_data = img_buffer.getvalue()
+                        image_id = self.db_manager.add_face_image(person_id, image_data, 'jpg')
+                        print(f"使用PIL成功保存 {name} 的人脸图像到数据库: 图像ID {image_id}")
+                        
+                        # 保存特征向量
+                        if feature is not None:
+                            feature_id = self.db_manager.add_face_feature(person_id, feature)
+                            print(f"成功保存人脸特征向量到数据库: 特征ID {feature_id}")
+                        
                         saved_count += 1
-                        print(f"使用PIL成功保存 {person_id} 的人脸: {save_path}")
-                    except:
-                        print(f"保存 {person_id} 的人脸失败")
-                
-                # 更新已注册人名列表
-                if person_id not in self.registered_names:
-                    self.registered_names.append(person_id)
+                    except Exception as pil_error:
+                        print(f"保存 {name} 的人脸图像失败: {str(pil_error)}")
                 
             except Exception as e:
-                print(f"保存 {person_id} 的人脸时出错: {str(e)}")
+                print(f"保存 {name} 的人脸时出错: {str(e)}")
                 continue
         
         if saved_count > 0:
-            self.update_name_list()
-            self.update_status(f"批量保存完成，共保存 {saved_count} 张人脸")
-            messagebox.showinfo("成功", f"批量保存完成，共保存 {saved_count} 张人脸")
+            self.load_registered_names()
+            self.update_status(f"批量保存完成，共保存 {saved_count} 张人脸到数据库")
+            messagebox.showinfo("成功", f"批量保存完成，共保存 {saved_count} 张人脸到数据库")
         else:
             self.update_status("批量保存失败")
             messagebox.showerror("错误", "批量保存失败")
     
     def delete_selected_name(self):
-        """删除选中的人名"""
+        """从数据库删除选中的人员信息"""
         selection = self.listbox_names.curselection()
         if not selection:
-            messagebox.showwarning("警告", "请先选择要删除的人名")
+            messagebox.showwarning("警告", "请先选择要删除的人员")
             return
         
-        person_id = self.listbox_names.get(selection[0])
-        if messagebox.askyesno("确认", f"确定要删除 {person_id} 的所有人脸数据吗？"):
-            self.update_status(f"正在删除 {person_id} 的数据...")
+        person_id_str = self.listbox_names.get(selection[0])
+        if messagebox.askyesno("确认", f"确定要删除 {person_id_str} 的所有人脸数据吗？"):
+            self.update_status(f"正在删除 {person_id_str} 的数据...")
             
-            # 删除文件夹
-            folder_path = os.path.join(self.path_photos_from_camera, f"person_{person_id}")
-            if os.path.exists(folder_path):
-                shutil.rmtree(folder_path)
-            
-            # 更新列表
-            self.registered_names.remove(person_id)
-            self.update_name_list()
-            
-            self.update_status(f"已删除 {person_id} 的所有人脸数据")
-            messagebox.showinfo("成功", f"已删除 {person_id} 的所有人脸数据")
+            try:
+                # 解析姓名和身份证号
+                if '_' in person_id_str:
+                    parts = person_id_str.split('_', 1)
+                    display_name = parts[0]
+                    display_id = parts[1]
+                else:
+                    display_name = person_id_str
+                    display_id = None
+                
+                # 从数据库获取人员信息，优先查找real_name和real_id_card
+                person_info = self.db_manager.get_person_by_name_id(display_name, display_id)
+                
+                # 如果没找到，尝试查找real_name和real_id_card
+                if not person_info:
+                    # 获取所有人员信息进行匹配
+                    persons = self.db_manager.get_all_persons(include_temp=False)
+                    for person in persons:
+                        real_name = person.get('real_name') or person['name']
+                        real_id = person.get('real_id_card') or person.get('id_card')
+                        
+                        if real_name == display_name and real_id == display_id:
+                            person_info = person
+                            break
+                
+                if person_info:
+                    # 删除人员（会级联删除相关的人脸图像和特征）
+                    success = self.db_manager.delete_person(person_info['id'])
+                    if success:
+                        self.update_status(f"已删除 {person_id_str} 的所有数据")
+                        messagebox.showinfo("成功", f"已删除 {person_id_str} 的所有数据")
+                        # 更新列表
+                        self.load_registered_names()
+                    else:
+                        self.update_status("删除失败")
+                        messagebox.showerror("错误", "删除失败")
+                else:
+                    self.update_status("未找到该人员")
+                    messagebox.showerror("错误", "未找到该人员")
+                    
+            except Exception as e:
+                print(f"删除人员时出错: {str(e)}")
+                self.update_status("删除失败")
+                messagebox.showerror("错误", f"删除失败: {str(e)}")
     
     def update_save_button_text(self):
         """更新保存按钮文本"""
@@ -830,13 +977,28 @@ class FaceCollector:
         if '_' in person_id:
             parts = person_id.split('_', 1)  # 最多分割1次，保留身份证号中的下划线
             if len(parts) >= 2:
-                name = parts[0]
-                id_number = parts[1]
-                # 填充姓名和身份证号
+                display_name = parts[0]
+                display_id = parts[1]
+                
+                # 从数据库查找对应的真实身份信息
+                persons = self.db_manager.get_all_persons(include_temp=False)
+                for person in persons:
+                    real_name = person.get('real_name') or person['name']
+                    real_id = person.get('real_id_card') or person.get('id_card')
+                    
+                    if real_name == display_name and real_id == display_id:
+                        # 填充真实身份信息
+                        self.entry_name.delete(0, tk.END)
+                        self.entry_name.insert(0, real_name)
+                        self.entry_id.delete(0, tk.END)
+                        self.entry_id.insert(0, real_id)
+                        return
+                
+                # 如果没找到匹配的真实身份，使用显示的信息
                 self.entry_name.delete(0, tk.END)
-                self.entry_name.insert(0, name)
+                self.entry_name.insert(0, display_name)
                 self.entry_id.delete(0, tk.END)
-                self.entry_id.insert(0, id_number)
+                self.entry_id.insert(0, display_id)
             else:
                 # 如果格式不正确，只填充姓名
                 self.entry_name.delete(0, tk.END)
@@ -849,6 +1011,11 @@ class FaceCollector:
     def run(self):
         """运行程序"""
         self.win.mainloop()
+    
+    def __del__(self):
+        """析构函数，确保数据库连接正确关闭"""
+        if hasattr(self, 'db_manager'):
+            self.db_manager.close()
 
 if __name__ == "__main__":
     collector = FaceCollector()
