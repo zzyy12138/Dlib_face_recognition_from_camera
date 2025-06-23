@@ -1,11 +1,12 @@
 """
-基于Dlib的人脸识别监控程序（优化弹窗版本）
+基于Dlib的人脸识别监控程序
 功能：
 1. 实时捕获屏幕画面并进行人脸检测 
 2. 对检测到的人脸进行识别和跟踪 
 3. 支持透明窗口显示，不影响其他操作 
 4. 系统托盘图标控制 
 5. 智能管理新面孔弹窗，避免过多弹窗 
+6. 自动API调用获取真实身份信息
 """
  
 import dlib 
@@ -28,7 +29,18 @@ import string
 from datetime import datetime 
 import threading 
 import csv 
- 
+import base64
+import json
+
+# 尝试导入requests库，如果失败则禁用API功能
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    print("警告: requests库未安装，API功能将被禁用")
+    print("如需启用API功能，请运行: pip install requests flask flask-cors")
+
 # 创建logs目录
 if not os.path.exists('logs'):
     os.makedirs('logs')
@@ -141,6 +153,18 @@ class TransparentFaceRecognizer:
         self.auto_add_new_faces  = False  # 是否自动识别添加新面孔 - 默认关闭
         self.processed_features  = set()  # 已处理的特征集合
         
+        # API相关配置
+        self.api_enabled = REQUESTS_AVAILABLE  # 是否启用API调用
+        self.api_url = "http://localhost:5000/api/recognize_face"  # API地址
+        self.api_timeout = 10  # API请求超时时间(秒)
+        self.api_retry_count = 3  # API重试次数
+        self.temp_faces = {}  # 临时存储的人脸信息 {feature_str: {'temp_name': 'xxx', 'temp_id': 'xxx', 'face_img': img_array}}
+        self.temp_user_counter = 1  # 临时用户计数器
+        
+        # 清理计时器
+        self.last_cleanup_time = time.time()
+        self.cleanup_interval = 3600  # 每小时清理一次临时文件
+        
         # 初始化 
         self.set_window_clickthrough() 
         self.get_face_database() 
@@ -159,6 +183,11 @@ class TransparentFaceRecognizer:
         logging.info(f"弹窗显示: {'开启' if self.show_popup else '关闭'}")
         logging.info(f"自动发现新面孔: {'开启' if self.auto_add_new_faces else '关闭'}")
         logging.info(f"状态显示: {'开启' if self.show_status_display else '关闭'}")
+        logging.info(f"API库可用: {'是' if REQUESTS_AVAILABLE else '否'}")
+        logging.info(f"API调用: {'开启' if self.api_enabled else '关闭'}")
+        if self.api_enabled:
+            logging.info(f"API地址: {self.api_url}")
+            logging.info(f"API超时: {self.api_timeout}秒")
  
     def create_system_tray_icon(self):
         """创建系统托盘图标"""
@@ -210,9 +239,19 @@ class TransparentFaceRecognizer:
             self.toggle_status_display
         )
         
+        self.toggle_api_item = pystray.MenuItem(
+            lambda item: f"{'关闭' if self.api_enabled else '开启'}API调用",
+            self.toggle_api_enabled
+        )
+        
         self.manual_add_item = pystray.MenuItem(
             "手动添加人脸",
             self.manual_add_face
+        )
+        
+        self.manual_cleanup_item = pystray.MenuItem(
+            "清理临时文件",
+            self.manual_cleanup_temp_files
         )
         
         menu = pystray.Menu(
@@ -220,8 +259,10 @@ class TransparentFaceRecognizer:
             self.toggle_auto_add_item,
             self.threshold_item,
             self.toggle_status_item,
+            self.toggle_api_item,
             pystray.MenuItem('手动添加人脸', self.manual_add_face),
             pystray.MenuItem('打开人脸数据文件夹', self.open_faces_folder),
+            pystray.MenuItem('清理临时文件', self.manual_cleanup_temp_files),
             pystray.MenuItem('退出', self.quit_program) 
         )
         
@@ -310,6 +351,332 @@ class TransparentFaceRecognizer:
             icon.update_menu()
         logging.info(f" 状态显示已 {'开启' if self.show_status_display else '关闭'}")
  
+    def toggle_api_enabled(self, icon=None, item=None):
+        """切换API调用状态"""
+        self.api_enabled = not self.api_enabled
+        if icon:
+            icon.update_menu()
+        logging.info(f" API调用已 {'开启' if self.api_enabled else '关闭'}")
+
+    def generate_temp_identity(self):
+        """生成临时身份信息"""
+        # 生成类似 unknown1, unknown2 的临时姓名
+        temp_name = f"unknown{self.temp_user_counter}"
+        
+        # 生成临时身份证号
+        temp_id = "TEMP" + str(random.randint(100000, 999999))
+        
+        # 增加计数器
+        self.temp_user_counter += 1
+        
+        return temp_name, temp_id
+
+    def image_to_base64(self, img_array):
+        """将图像数组转换为base64编码"""
+        try:
+            # 确保图像是BGR格式（OpenCV默认格式）
+            if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+                # 转换为RGB格式
+                img_rgb = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
+            else:
+                img_rgb = img_array
+            
+            # 编码为JPEG格式
+            success, buffer = cv2.imencode('.jpg', img_rgb)
+            if success:
+                # 转换为base64
+                img_base64 = base64.b64encode(buffer).decode('utf-8')
+                return img_base64
+            else:
+                logging.error("图像编码失败")
+                return None
+        except Exception as e:
+            logging.error(f"图像转base64失败: {str(e)}")
+            return None
+
+    def call_face_recognition_api(self, face_img):
+        """调用人脸识别API"""
+        if not self.api_enabled:
+            logging.debug("API调用已禁用")
+            return None
+        
+        if not REQUESTS_AVAILABLE:
+            logging.warning("requests库不可用，无法调用API")
+            return None
+        
+        try:
+            # 转换图像为base64
+            img_base64 = self.image_to_base64(face_img)
+            if not img_base64:
+                logging.error("图像转base64失败")
+                return None
+            
+            # 准备请求数据
+            request_data = {
+                'image_base64': img_base64
+            }
+            
+            # 发送API请求
+            logging.info("正在调用人脸识别API...")
+            response = requests.post(
+                self.api_url,
+                json=request_data,
+                timeout=self.api_timeout,
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('success'):
+                    data = result.get('data', {})
+                    name = data.get('name', '')
+                    id_card = data.get('id_card', '')
+                    confidence = data.get('confidence', 0.0)
+                    processing_time = data.get('processing_time', 0.0)
+                    
+                    logging.info(f"API识别成功: {name} - {id_card} (置信度: {confidence:.3f}, 耗时: {processing_time:.2f}s)")
+                    return {
+                        'name': name,
+                        'id_card': id_card,
+                        'confidence': confidence,
+                        'processing_time': processing_time
+                    }
+                else:
+                    error_msg = result.get('error', '未知错误')
+                    logging.warning(f"API识别失败: {error_msg}")
+                    return None
+            else:
+                logging.error(f"API请求失败，状态码: {response.status_code}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            logging.error("API请求超时")
+            return None
+        except requests.exceptions.ConnectionError:
+            logging.error("无法连接到API服务器")
+            return None
+        except Exception as e:
+            logging.error(f"API调用出错: {str(e)}")
+            return None
+
+    def update_face_with_api_result(self, feature_str, api_result):
+        """使用API结果更新人脸信息"""
+        if not api_result:
+            logging.warning("API结果为空，无法更新人脸信息")
+            return False
+        
+        try:
+            # 检查临时人脸是否存在
+            if feature_str not in self.temp_faces:
+                logging.warning(f"临时人脸 {feature_str} 不存在")
+                return False
+            
+            temp_face = self.temp_faces[feature_str]
+            real_name = api_result['name']
+            real_id_card = api_result['id_card']
+            
+            # 删除临时文件夹和文件
+            temp_folder_path = temp_face['folder_path']
+            if os.path.exists(temp_folder_path):
+                try:
+                    # 删除临时文件夹中的所有文件
+                    for file in os.listdir(temp_folder_path):
+                        file_path = os.path.join(temp_folder_path, file)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                            logging.debug(f"已删除临时文件: {file_path}")
+                    
+                    # 删除临时文件夹
+                    os.rmdir(temp_folder_path)
+                    logging.info(f"已删除临时文件夹: {temp_folder_path}")
+                except Exception as e:
+                    logging.warning(f"删除临时文件夹失败: {str(e)}")
+            
+            # 检查是否已存在相同身份
+            existing_person_name = f"{real_name}_{real_id_card}"
+            existing_folder_name = f"person_{real_name}_{real_id_card}"
+            existing_folder_path = f"data/data_faces_from_camera/{existing_folder_name}"
+            
+            # 检查是否已存在相同身份
+            if existing_person_name in self.face_name_known_list:
+                # 身份已存在，在现有文件夹中新增图片
+                logging.info(f"发现相同身份 {real_name} - {real_id_card}，在现有文件夹中新增图片")
+                
+                # 确保文件夹存在
+                os.makedirs(existing_folder_path, exist_ok=True)
+                
+                # 找到下一个可用的图片编号
+                img_index = 1
+                while os.path.exists(os.path.join(existing_folder_path, f"img_face_{img_index}.jpg")):
+                    img_index += 1
+                
+                img_filename = os.path.join(existing_folder_path, f"img_face_{img_index}.jpg")
+                
+                # 保存图像
+                face_img = temp_face['face_img']
+                face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
+                success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
+                if success:
+                    with open(img_filename, 'wb') as f:
+                        f.write(encoded_img.tobytes())
+                    logging.info(f"已在现有文件夹中新增图片: {img_filename}")
+                else:
+                    logging.error("保存图像失败")
+                    return False
+                
+                # 从内存数据库中移除临时身份
+                temp_person_name = f"{temp_face['temp_name']}_{temp_face['temp_id']}"
+                if temp_person_name in self.face_name_known_list:
+                    temp_index = self.face_name_known_list.index(temp_person_name)
+                    self.face_name_known_list.pop(temp_index)
+                    self.face_feature_known_list.pop(temp_index)
+                    self.face_image_path_list.pop(temp_index)
+                    logging.debug(f"已从内存数据库中移除临时身份: {temp_person_name}")
+                
+                # 更新内存中的特征（使用新图片的特征）
+                existing_index = self.face_name_known_list.index(existing_person_name)
+                # 可以选择更新特征或保持原有特征，这里选择更新为新图片的特征
+                self.face_feature_known_list[existing_index] = temp_face['feature']
+                logging.info(f"已更新 {existing_person_name} 的特征")
+                
+            else:
+                # 新身份，创建新文件夹
+                logging.info(f"发现新身份 {real_name} - {real_id_card}，创建新文件夹")
+                
+                # 创建新的文件夹名称
+                folder_name = f"person_{real_name}_{real_id_card}"
+                folder_path = f"data/data_faces_from_camera/{folder_name}"
+                
+                # 确保文件夹存在
+                os.makedirs(folder_path, exist_ok=True)
+                
+                # 保存图像
+                img_filename = os.path.join(folder_path, "img_face_1.jpg")
+                
+                # 保存图像
+                face_img = temp_face['face_img']
+                face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
+                success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
+                if success:
+                    with open(img_filename, 'wb') as f:
+                        f.write(encoded_img.tobytes())
+                else:
+                    logging.error("保存图像失败")
+                    return False
+                
+                # 从内存数据库中移除临时身份
+                temp_person_name = f"{temp_face['temp_name']}_{temp_face['temp_id']}"
+                if temp_person_name in self.face_name_known_list:
+                    temp_index = self.face_name_known_list.index(temp_person_name)
+                    self.face_name_known_list.pop(temp_index)
+                    self.face_feature_known_list.pop(temp_index)
+                    self.face_image_path_list.pop(temp_index)
+                    logging.debug(f"已从内存数据库中移除临时身份: {temp_person_name}")
+                
+                # 更新内存中的数据库
+                self.face_name_known_list.append(existing_person_name)
+                self.face_feature_known_list.append(temp_face['feature'])
+                self.face_image_path_list.append(img_filename)
+                
+                # 添加真实身份到CSV文件（增量更新）
+                logging.info("正在添加真实身份到特征文件...")
+                if self.update_face_database_csv(existing_person_name, temp_face['feature']):
+                    logging.info("特征文件更新成功")
+                else:
+                    logging.warning("特征文件更新失败")
+            
+            # 从临时存储中移除
+            del self.temp_faces[feature_str]
+            
+            logging.info(f"成功更新人脸信息: {real_name} - {real_id_card}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"更新人脸信息失败: {str(e)}")
+            return False
+
+    def cleanup_temp_files(self, max_age_hours=24):
+        """清理过期的临时文件"""
+        try:
+            current_time = time.time()
+            max_age_seconds = max_age_hours * 3600
+            
+            # 清理过期的临时人脸
+            expired_faces = []
+            for feature_str, temp_face in self.temp_faces.items():
+                if current_time - temp_face['detect_time'] > max_age_seconds:
+                    expired_faces.append(feature_str)
+            
+            for feature_str in expired_faces:
+                temp_face = self.temp_faces[feature_str]
+                temp_folder_path = temp_face['folder_path']
+                
+                # 删除临时文件夹
+                if os.path.exists(temp_folder_path):
+                    try:
+                        for file in os.listdir(temp_folder_path):
+                            file_path = os.path.join(temp_folder_path, file)
+                            if os.path.isfile(file_path):
+                                os.remove(file_path)
+                        os.rmdir(temp_folder_path)
+                        logging.info(f"已清理过期临时文件夹: {temp_folder_path}")
+                    except Exception as e:
+                        logging.warning(f"清理临时文件夹失败: {str(e)}")
+                
+                # 从内存中移除
+                temp_person_name = f"{temp_face['temp_name']}_{temp_face['temp_id']}"
+                if temp_person_name in self.face_name_known_list:
+                    temp_index = self.face_name_known_list.index(temp_person_name)
+                    self.face_name_known_list.pop(temp_index)
+                    self.face_feature_known_list.pop(temp_index)
+                    self.face_image_path_list.pop(temp_index)
+                
+                del self.temp_faces[feature_str]
+                self.processed_features.discard(feature_str)
+            
+            if expired_faces:
+                logging.info(f"已清理 {len(expired_faces)} 个过期的临时人脸")
+                
+        except Exception as e:
+            logging.error(f"清理临时文件时出错: {str(e)}")
+
+    def show_api_update_notification(self, temp_name, real_name, real_id):
+        """显示API更新通知"""
+        def show_notification():
+            popup = Toplevel(self.root)
+            popup.title("身份信息更新")
+            popup.geometry("400x300")
+            popup.attributes("-topmost", True)
+            popup.grab_set()
+            
+            # 主框架
+            main_frame = tk.Frame(popup)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+            
+            # 标题
+            title_label = Label(main_frame, text="身份信息已更新", font=('Arial', 14, 'bold'), fg='green')
+            title_label.pack(pady=(0, 20))
+            
+            # 更新信息
+            info_text = f"""临时身份: {temp_name}
+真实身份: {real_name}
+身份证号: {real_id}
+更新时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"""
+            
+            info_label = Label(main_frame, text=info_text, font=('Arial', 11), justify='left')
+            info_label.pack(pady=(0, 20))
+            
+            # 关闭按钮
+            close_btn = tk.Button(main_frame, text="确定", command=popup.destroy, 
+                                font=('Arial', 11), width=10, bg='green', fg='white')
+            close_btn.pack(pady=(0, 10))
+            
+            # 5秒后自动关闭
+            popup.after(5000, popup.destroy)
+        
+        # 在主线程中显示通知
+        self.root.after(0, show_notification)
+
     def manual_add_face(self, icon=None, item=None):
         """手动添加人脸"""
         def run_face_collector():
@@ -363,6 +730,29 @@ class TransparentFaceRecognizer:
             logging.error(f"无法打开文件夹 {folder_path}: {e}")
             import tkinter.messagebox as messagebox
             messagebox.showerror("错误", f"无法打开文件夹:\n{os.path.abspath(folder_path)}\n\n错误: {e}")
+
+    def manual_cleanup_temp_files(self, icon=None, item=None):
+        """手动清理临时文件"""
+        try:
+            logging.info("开始手动清理临时文件...")
+            before_count = len(self.temp_faces)
+            self.cleanup_temp_files(max_age_hours=0)  # 清理所有临时文件
+            after_count = len(self.temp_faces)
+            cleaned_count = before_count - after_count
+            
+            # 显示清理结果
+            import tkinter.messagebox as messagebox
+            if cleaned_count > 0:
+                messagebox.showinfo("清理完成", f"已清理 {cleaned_count} 个临时文件")
+                logging.info(f"手动清理完成，清理了 {cleaned_count} 个临时文件")
+            else:
+                messagebox.showinfo("清理完成", "没有需要清理的临时文件")
+                logging.info("手动清理完成，没有需要清理的临时文件")
+                
+        except Exception as e:
+            logging.error(f"手动清理临时文件时出错: {str(e)}")
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("错误", f"清理临时文件时出错:\n{str(e)}")
  
     def show_loading_progress(self, message, task_function):
         """显示加载进度条（直接在主窗口上显示）"""
@@ -563,11 +953,65 @@ class TransparentFaceRecognizer:
                 logging.error(f" 加载人脸数据库时出错: {str(e)}")
         else:
             logging.info(" 特征文件不存在或为空，跳过加载")
+
+    def update_face_database_csv(self, person_name, feature):
+        """更新人脸数据库CSV文件"""
+        try:
+            csv_path = "data/features_all.csv"
+            
+            # 检查是否已存在该身份
+            existing_data = []
+            person_exists = False
+            updated = False
+            
+            if os.path.exists(csv_path):
+                try:
+                    with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
+                        reader = csv.reader(csvfile)
+                        for row in reader:
+                            if row and row[0] == person_name:
+                                # 身份已存在，更新特征
+                                person_exists = True
+                                new_row = [person_name] + list(feature)
+                                existing_data.append(new_row)
+                                logging.info(f"更新身份 {person_name} 的特征")
+                                updated = True
+                            else:
+                                existing_data.append(row)
+                except Exception as e:
+                    logging.warning(f"读取CSV文件时出错: {str(e)}")
+                    return False
+            
+            if not person_exists:
+                # 新身份，追加到文件末尾
+                if not os.path.exists(csv_path):
+                    # 创建目录
+                    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+                
+                with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    row_data = [person_name] + list(feature)
+                    writer.writerow(row_data)
+                logging.info(f"已添加新身份到CSV文件: {person_name}")
+                return True
+            else:
+                # 身份已存在，重写整个文件
+                with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    for row in existing_data:
+                        writer.writerow(row)
+                if updated:
+                    logging.info(f"已更新CSV文件中 {person_name} 的特征")
+                return True
+            
+        except Exception as e:
+            logging.error(f"更新CSV文件失败: {str(e)}")
+            return False
  
     @staticmethod 
     def return_euclidean_distance(f1, f2):
         """计算两个特征向量之间的欧氏距离"""
-        return np.linalg.norm(np.array(f1)  - np.array(f2)) 
+        return np.linalg.norm(np.array(f1)  - np.array(f2))
  
     def update_fps(self):
         """更新帧率统计"""
@@ -640,440 +1084,125 @@ class TransparentFaceRecognizer:
         threading.Thread(target=show).start()
  
     def create_new_face_data(self, img, face_rect, shape, feature):
-        """处理新检测到的人脸"""
+        """处理新检测到的人脸 - 直接使用临时身份信息"""
         # 检查自动发现新面孔功能是否开启
         if not self.auto_add_new_faces:
-            logging.debug(" 自动发现新面孔功能已关闭，跳过")
+            logging.debug("自动发现新面孔功能已关闭，跳过")
             return
             
         current_time = time.time() 
         
         # 检查冷却时间 
-        if current_time - self.last_new_face_time  < self.new_face_cooldown: 
-            logging.debug(" 新面孔检测过于频繁，已忽略")
+        if current_time - self.last_new_face_time < self.new_face_cooldown: 
+            logging.debug("新面孔检测过于频繁，已忽略")
             return 
             
         # 检查是否已经处理过这个特征 
         feature_str = ','.join(map(str, feature))
         if feature_str in self.processed_features: 
-            logging.debug(" 已处理过此特征的人脸，跳过")
+            logging.debug("已处理过此特征的人脸，跳过")
             return 
             
-        # 检查是否正在处理新面孔（包括弹窗是否还在显示）
+        # 检查是否正在处理新面孔
         if self.is_processing_new_face or self.new_face_popup_window is not None: 
-            logging.debug(" 已有正在处理的新面孔或弹窗还在显示，跳过")
+            logging.debug("已有正在处理的新面孔或弹窗还在显示，跳过")
             return 
             
         # 记录新面孔检测
         logging.info(f"发现新面孔，准备处理 (位置: {face_rect.left()},{face_rect.top()}-{face_rect.right()},{face_rect.bottom()})")
-            
-        # 记录当前新面孔 
-        self.current_new_face  = {
-            'img': img,
-            'face_rect': face_rect,
-            'shape': shape,
+        
+        # 截取人脸图像
+        top = max(0, face_rect.top()) 
+        bottom = min(img.shape[0], face_rect.bottom()) 
+        left = max(0, face_rect.left()) 
+        right = min(img.shape[1], face_rect.right()) 
+        face_img = img[top:bottom, left:right]
+        
+        # 生成临时身份信息
+        temp_name, temp_id = self.generate_temp_identity()
+        
+        # 创建临时文件夹并保存图像
+        temp_folder_name = f"person_{temp_name}_{temp_id}"
+        temp_folder_path = f"data/data_faces_from_camera/{temp_folder_name}"
+        os.makedirs(temp_folder_path, exist_ok=True)
+        
+        # 保存临时图像
+        img_filename = os.path.join(temp_folder_path, "img_face_1.jpg")
+        try:
+            face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
+            success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
+            if success:
+                with open(img_filename, 'wb') as f:
+                    f.write(encoded_img.tobytes())
+            else:
+                logging.error("保存临时图像失败")
+                return
+        except Exception as e:
+            logging.error(f"保存临时图像失败: {str(e)}")
+            return
+        
+        # 添加到临时存储
+        self.temp_faces[feature_str] = {
+            'temp_name': temp_name,
+            'temp_id': temp_id,
+            'face_img': face_img,
             'feature': feature,
-            'detect_time': current_time,
-            'feature_str': feature_str 
+            'folder_path': temp_folder_path,
+            'img_filename': img_filename,
+            'detect_time': current_time
         }
         
-        # 标记为正在处理 
-        self.is_processing_new_face  = True 
-        self.last_new_face_time  = current_time 
-        self.processed_features.add(feature_str) 
+        # 添加到内存数据库（临时，仅用于显示）
+        temp_person_name = f"{temp_name}_{temp_id}"
+        self.face_name_known_list.append(temp_person_name)
+        self.face_feature_known_list.append(feature)
+        self.face_image_path_list.append(img_filename)
         
-        # 直接处理这个新面孔 
-        self.process_new_face()
- 
-    def process_new_face(self):
-        """处理当前新面孔"""
-        if not self.current_new_face: 
-            self.is_processing_new_face  = False 
-            self.new_face_popup_window  = None
-            return 
-            
-        face_data = self.current_new_face  
- 
-        def ask_name_with_preview():
-            popup = Toplevel(self.root) 
-            popup.title("发现新的人脸")
-            popup.geometry("800x800") 
-            popup.attributes("-topmost",  True)
-            popup.grab_set() 
-            popup.resizable(False, False)  # 禁止调整大小
-            
-            # 保存弹窗窗口对象引用
-            self.new_face_popup_window = popup
-
-            # 创建主框架
-            main_frame = tk.Frame(popup)
-            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-
-            # 标题
-            title_label = Label(main_frame, text="发现新的人脸", font=('Arial', 16, 'bold'))
-            title_label.pack(pady=(0, 20))
-
-            # 截取人脸图像 
-            rect = face_data['face_rect']
-            img = face_data['img']
-            top = max(0, rect.top()) 
-            bottom = min(img.shape[0],  rect.bottom()) 
-            left = max(0, rect.left()) 
-            right = min(img.shape[1],  rect.right()) 
-            face_img = img[top:bottom, left:right]
- 
-            # 显示新检测到的人脸图像 
+        # 注意：不更新CSV文件，因为这是临时身份
+        # 只有在API返回真实身份后才会更新特征文件
+        
+        # 标记为已处理
+        self.processed_features.add(feature_str)
+        self.last_new_face_time = current_time
+        
+        logging.info(f"已创建临时身份: {temp_name} - {temp_id}")
+        
+        # 在新线程中调用API
+        def api_call_thread():
             try:
-                pil_img = Image.fromarray(face_img).resize((200,  200))
-                tk_img = ImageTk.PhotoImage(pil_img)
-                img_label = Label(main_frame, image=tk_img)
-                img_label.image  = tk_img 
-                img_label.pack(pady=(0, 20)) 
-            except Exception as e:
-                error_label = Label(main_frame, text="图像显示失败", font=('Arial', 12))
-                error_label.pack(pady=(0, 20))
-
-            # 创建选项卡
-            notebook = ttk.Notebook(main_frame)
-            notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
-
-            # 选项卡1：创建新文件夹
-            new_folder_frame = ttk.Frame(notebook)
-            notebook.add(new_folder_frame, text="创建新文件夹")
-
-            # 选项卡2：保存到已有文件夹
-            existing_folder_frame = ttk.Frame(notebook)
-            notebook.add(existing_folder_frame, text="保存到已有文件夹")
-
-            # ===== 选项卡1：创建新文件夹 =====
-            # 创建一个容器框架，并使用grid布局以更好地对齐
-            input_container = tk.Frame(new_folder_frame)
-            input_container.pack(pady=40, padx=30, fill=tk.X, expand=True)
-            
-            prompt_label = Label(input_container, text="请输入此人信息：", font=('Arial', 12, 'bold'))
-            prompt_label.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 20))
-
-            # 姓名
-            name_label = Label(input_container, text="姓名:", font=('Arial', 11))
-            name_label.grid(row=1, column=0, sticky='e', pady=5)
-            name_entry = tk.Entry(input_container, font=('Arial', 11))
-            name_entry.grid(row=1, column=1, sticky='ew', pady=5, padx=(10, 0))
-            name_entry.focus_set()
-
-            # 身份证号
-            id_label = Label(input_container, text="身份证号:", font=('Arial', 11))
-            id_label.grid(row=2, column=0, sticky='e', pady=5)
-            id_entry = tk.Entry(input_container, font=('Arial', 11))
-            id_entry.grid(row=2, column=1, sticky='ew', pady=5, padx=(10, 0))
-
-            # 配置列的权重，使输入框可以水平扩展
-            input_container.columnconfigure(1, weight=1)
-
-            # ===== 选项卡2：保存到已有文件夹 =====
-            # 获取已有文件夹列表
-            existing_folders = []
-            data_faces_path = "data/data_faces_from_camera/"
-            if os.path.exists(data_faces_path):
-                existing_folders = [f for f in os.listdir(data_faces_path) if f.startswith("person_")]
-            
-            if existing_folders:
-                # 创建左右分栏布局
-                content_frame = tk.Frame(existing_folder_frame)
-                content_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+                logging.info(f"开始为 {temp_name} 调用API获取真实身份...")
+                api_result = self.call_face_recognition_api(face_img)
                 
-                # 左侧：文件夹列表
-                left_frame = tk.Frame(content_frame)
-                left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-                
-                # 文件夹选择提示
-                select_label = Label(left_frame, text="选择要保存到的文件夹：", font=('Arial', 12, 'bold'))
-                select_label.pack(pady=(0, 10))
-                
-                # 创建列表框和滚动条的容器，并设置固定高度
-                listbox_container = tk.Frame(left_frame, height=250)
-                listbox_container.pack(fill=tk.X, expand=False)
-                listbox_container.pack_propagate(False)
-                
-                scrollbar = tk.Scrollbar(listbox_container)
-                scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-                
-                # 列表框，不单独设置高度，它将填充父容器
-                folder_listbox = tk.Listbox(listbox_container, yscrollcommand=scrollbar.set, font=('Arial', 10))
-                folder_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-                scrollbar.config(command=folder_listbox.yview)
-                
-                # 填充文件夹列表
-                for folder in sorted(existing_folders):
-                    # 解析文件夹名称显示
-                    folder_parts = folder.split('_', 2)
-                    if len(folder_parts) >= 3:
-                        display_name = f"{folder_parts[1]}_{folder_parts[2]}"
-                    elif len(folder_parts) == 2:
-                        display_name = f"未知_{folder_parts[1]}"
-                    else:
-                        display_name = folder
-                    
-                    folder_listbox.insert(tk.END, display_name)
-                
-                # 右侧：预览区域
-                right_frame = tk.Frame(content_frame)
-                right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
-                
-                preview_label = Label(right_frame, text="预览：", font=('Arial', 11, 'bold'))
-                preview_label.pack(anchor='w', pady=(0, 5))
-                
-                # 创建一个固定大小的框架来容纳预览图像
-                preview_img_frame = tk.Frame(right_frame, width=204, height=204, relief=tk.SUNKEN, borderwidth=2)
-                preview_img_frame.pack(pady=(0, 10))
-                preview_img_frame.pack_propagate(False) # 防止框架收缩
-
-                # 预览图像标签 - 放置在固定大小的框架中
-                preview_img_label = Label(preview_img_frame, text="请选择一个文件夹查看预览", font=('Arial', 10))
-                preview_img_label.pack(fill=tk.BOTH, expand=True)
-                
-                def on_folder_select(event):
-                    """当选择文件夹时更新预览"""
-                    selection = folder_listbox.curselection()
-                    if selection:
-                        selected_index = selection[0]
-                        selected_folder = existing_folders[selected_index]
-                        folder_path = os.path.join(data_faces_path, selected_folder)
+                if api_result:
+                    # API调用成功，更新身份信息
+                    success = self.update_face_with_api_result(feature_str, api_result)
+                    if success:
+                        logging.info(f"成功更新 {temp_name} 为真实身份: {api_result['name']} - {api_result['id_card']}")
                         
-                        # 查找第一张图片
-                        try:
-                            image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-                            if image_files:
-                                first_img_path = os.path.join(folder_path, image_files[0])
-                                # 读取并显示预览图像
-                                try:
-                                    img_path_abs = os.path.abspath(first_img_path)
-                                    img = cv2.imdecode(np.fromfile(img_path_abs, dtype=np.uint8), cv2.IMREAD_COLOR)
-                                    if img is not None:
-                                        # 转换为RGB并调整大小
-                                        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                                        pil_img = Image.fromarray(img_rgb).resize((200, 200), Image.Resampling.LANCZOS)
-                                        tk_img = ImageTk.PhotoImage(pil_img)
-                                        preview_img_label.configure(image=tk_img, text="")
-                                        preview_img_label.image = tk_img
-                                    else:
-                                        preview_img_label.configure(image="", text="无法读取图像")
-                                except Exception as e:
-                                    preview_img_label.configure(image="", text=f"图像加载失败: {str(e)}")
-                            else:
-                                preview_img_label.configure(image="", text="文件夹中没有图像")
-                        except Exception as e:
-                            preview_img_label.configure(image="", text=f"无法访问文件夹: {str(e)}")
-                
-                # 绑定选择事件
-                folder_listbox.bind('<<ListboxSelect>>', on_folder_select)
-                
-            else:
-                # 没有现有文件夹时的提示
-                no_folder_label = Label(existing_folder_frame, text="没有找到现有的人脸文件夹", font=('Arial', 12))
-                no_folder_label.pack(pady=50)
-
-            def on_confirm_new_folder():
-                """确认创建新文件夹"""
-                name = name_entry.get().strip()
-                id_number = id_entry.get().strip()
-                
-                # 验证输入
-                if not name:
-                    import tkinter.messagebox as messagebox
-                    messagebox.showerror("错误", "请输入姓名")
-                    return
-                
-                if not id_number:
-                    import tkinter.messagebox as messagebox
-                    messagebox.showerror("错误", "请输入身份证号")
-                    return
-                
-                # 验证身份证号格式（简单验证）
-                if len(id_number) != 18:
-                    import tkinter.messagebox as messagebox
-                    result = messagebox.askyesno("警告", "身份证号长度不是18位，是否继续？")
-                    if not result:
-                        return
-                
-                # 创建文件夹名称：姓名_身份证号
-                folder_name = f"person_{name}_{id_number}"
-                folder = f"data/data_faces_from_camera/{folder_name}"
-                os.makedirs(folder,  exist_ok=True)
-                
-                # 查找可用的文件名 
-                img_index = 1 
-                while os.path.exists(os.path.join(folder,  f"img_face_{img_index}.jpg")):
-                    img_index += 1 
-                    
-                img_filename = os.path.join(folder,  f"img_face_{img_index}.jpg")
-                
-                # 保存图像 - 使用imencode避免中文路径问题
-                try:
-                    # 转换颜色空间
-                    face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
-                    # 使用imencode保存图像
-                    success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
-                    if success:
-                        with open(img_filename, 'wb') as f:
-                            f.write(encoded_img.tobytes())
+                        # 显示更新通知
+                        if self.show_popup:
+                            self.show_api_update_notification(temp_name, api_result['name'], api_result['id_card'])
                     else:
-                        raise Exception("图像编码失败")
-                except Exception as e:
-                    logging.error(f"保存图像失败: {str(e)}")
-                    import tkinter.messagebox as messagebox
-                    messagebox.showerror("错误", f"保存图像失败: {str(e)}")
-                    return
-                
-                # 更新内存中的数据库 
-                self.face_name_known_list.append(f"{name}_{id_number}") 
-                self.face_feature_known_list.append(face_data['feature']) 
-                self.face_image_path_list.append(img_filename) 
-                
-                # 更新CSV文件 
-                self.update_face_database_csv(f"{name}_{id_number}",  face_data['feature'])
-                
-                logging.info(f" 新增人脸: {name}_{id_number}，图像保存为 {img_filename}")
-                popup.destroy() 
-                
-                # 处理完成，清理状态
-                self.is_processing_new_face  = False 
-                self.current_new_face  = None 
-                self.new_face_popup_window = None
-
-            def on_confirm_existing_folder():
-                """确认保存到已有文件夹"""
-                selection = folder_listbox.curselection()
-                if not selection:
-                    import tkinter.messagebox as messagebox
-                    messagebox.showerror("错误", "请选择一个文件夹")
-                    return
-                
-                selected_index = selection[0]
-                selected_folder = existing_folders[selected_index]
-                folder_path = os.path.join(data_faces_path, selected_folder)
-                
-                # 解析文件夹名称获取人员信息
-                folder_parts = selected_folder.split('_', 2)
-                if len(folder_parts) >= 3:
-                    person_name = f"{folder_parts[1]}_{folder_parts[2]}"
-                elif len(folder_parts) == 2:
-                    person_name = folder_parts[1]
+                        logging.error(f"更新 {temp_name} 身份信息失败")
                 else:
-                    person_name = selected_folder
-                
-                # 查找可用的文件名 
-                img_index = 1 
-                while os.path.exists(os.path.join(folder_path,  f"img_face_{img_index}.jpg")):
-                    img_index += 1 
+                    logging.warning(f"API调用失败，保持临时身份: {temp_name}")
                     
-                img_filename = os.path.join(folder_path,  f"img_face_{img_index}.jpg")
-                
-                # 保存图像
-                try:
-                    # 转换颜色空间
-                    face_img_bgr = cv2.cvtColor(face_img, cv2.COLOR_RGB2BGR)
-                    # 使用imencode保存图像
-                    success, encoded_img = cv2.imencode('.jpg', face_img_bgr)
-                    if success:
-                        with open(img_filename, 'wb') as f:
-                            f.write(encoded_img.tobytes())
-                    else:
-                        raise Exception("图像编码失败")
-                except Exception as e:
-                    logging.error(f"保存图像失败: {str(e)}")
-                    import tkinter.messagebox as messagebox
-                    messagebox.showerror("错误", f"保存图像失败: {str(e)}")
-                    return
-                
-                # 更新内存中的数据库 - 如果该人员已存在，更新特征；否则添加新记录
-                if person_name in self.face_name_known_list:
-                    # 更新现有记录的特征（取平均值）
-                    idx = self.face_name_known_list.index(person_name)
-                    old_feature = self.face_feature_known_list[idx]
-                    new_feature = np.mean([old_feature, face_data['feature']], axis=0)
-                    self.face_feature_known_list[idx] = list(new_feature)
-                    logging.info(f" 更新人脸特征: {person_name}")
-                else:
-                    # 添加新记录
-                    self.face_name_known_list.append(person_name) 
-                    self.face_feature_known_list.append(face_data['feature']) 
-                    self.face_image_path_list.append(img_filename) 
-                    logging.info(f" 新增人脸: {person_name}，图像保存为 {img_filename}")
-                
-                # 更新CSV文件 
-                self.update_face_database_csv(person_name, face_data['feature'])
-                
-                popup.destroy() 
-                
-                # 处理完成，清理状态
-                self.is_processing_new_face  = False 
-                self.current_new_face  = None 
-                self.new_face_popup_window = None
-
-            def on_cancel():
-                logging.info("用户取消添加新面孔")
-                popup.destroy() 
-                # 处理完成，清理状态
-                self.is_processing_new_face  = False 
-                self.current_new_face  = None 
-                self.new_face_popup_window = None
-
-            # 按钮框架
-            button_frame = tk.Frame(main_frame)
-            button_frame.pack(pady=(0, 10))
-            
-            # 创建新文件夹按钮
-            new_folder_btn = tk.Button(button_frame, text="创建新文件夹", command=on_confirm_new_folder, 
-                                     font=('Arial', 11), width=15, bg='green', fg='white')
-            new_folder_btn.pack(side=tk.LEFT, padx=5)
-            
-            # 保存到已有文件夹按钮（仅在有现有文件夹时显示）
-            if existing_folders:
-                existing_folder_btn = tk.Button(button_frame, text="保存到选中文件夹", command=on_confirm_existing_folder, 
-                                             font=('Arial', 11), width=15, bg='blue', fg='white')
-                existing_folder_btn.pack(side=tk.LEFT, padx=5)
-            
-            # 跳过按钮
-            cancel_btn = tk.Button(button_frame, text="跳过", command=on_cancel, 
-                                 font=('Arial', 11), width=12, bg='gray', fg='white')
-            cancel_btn.pack(side=tk.LEFT, padx=5)
-            
-            # 绑定回车键到新文件夹确认
-            popup.bind('<Return>',  lambda e: on_confirm_new_folder())
-            popup.protocol("WM_DELETE_WINDOW",  on_cancel)
- 
-        self.root.after(0,  ask_name_with_preview)
- 
-    def check_popup_status(self):
-        """检查弹窗状态，确保状态一致性"""
-        # 如果弹窗窗口对象存在但窗口已关闭，清理状态
-        if self.new_face_popup_window is not None:
-            try:
-                # 尝试获取窗口状态，如果窗口已关闭会抛出异常
-                self.new_face_popup_window.winfo_exists()
-            except:
-                # 窗口已关闭，清理状态
-                self.is_processing_new_face = False
-                self.current_new_face = None
-                self.new_face_popup_window = None
-                logging.debug("检测到弹窗已关闭，已清理状态")
-
-    def update_face_database_csv(self, name, feature):
-        """更新人脸特征CSV文件"""
-        try:
-            with open("data/features_all.csv",  'a', newline='') as f:
-                writer = csv.writer(f) 
-                writer.writerow([name]  + list(feature))
-        except Exception as e:
-            logging.error(f" 更新特征文件时出错: {str(e)}")
+            except Exception as e:
+                logging.error(f"API调用线程出错: {str(e)}")
+        
+        # 启动API调用线程
+        threading.Thread(target=api_call_thread, daemon=True).start()
  
     def process_frame(self):
         """处理每一帧图像"""
         # 检查日志轮转
         log_manager.check_and_rotate()
         
-        # 检查弹窗状态，确保状态一致性
-        self.check_popup_status()
+        # 定期清理临时文件
+        current_time = time.time()
+        if current_time - self.last_cleanup_time > self.cleanup_interval:
+            self.cleanup_temp_files(max_age_hours=24)
+            self.last_cleanup_time = current_time
         
         # 如果正在显示进度条，跳过人脸检测
         if hasattr(self, 'progress_active') and self.progress_active:
@@ -1174,7 +1303,7 @@ class TransparentFaceRecognizer:
         if self.show_status_display:
             # 创建半透明背景
             bg_width = 310
-            bg_height = 180  # 恢复原来的高度
+            bg_height = 210  # 增加高度以容纳API状态
             self.canvas.create_rectangle(
                 10, 10, 10 + bg_width, 10 + bg_height,
                 fill='black', outline='white', width=2, stipple='gray50'
@@ -1225,10 +1354,23 @@ class TransparentFaceRecognizer:
                 anchor='nw'
             )
             
+            # 显示API状态
+            api_status = "API调用: 开启" if self.api_enabled else "API调用: 关闭"
+            if self.temp_faces:
+                api_status += f" | 临时面孔: {len(self.temp_faces)}"
+            api_color = 'green' if self.api_enabled else 'red'
+            self.canvas.create_text( 
+                20, 125, 
+                text=api_status, 
+                fill=api_color, 
+                font=('Arial', 11, 'bold'), 
+                anchor='nw'
+            )
+            
             # 显示当前识别阈值
             threshold_status = f"识别阈值: {self.recognition_threshold:.2f}"
             self.canvas.create_text( 
-                20, 125, 
+                20, 150, 
                 text=threshold_status, 
                 fill='magenta', 
                 font=('Arial', 11, 'bold'), 
@@ -1238,7 +1380,7 @@ class TransparentFaceRecognizer:
             # 显示运行模式
             mode_status = f"运行模式: {'GPU加速' if gpu_available else 'CPU优化'} (间隔:{self.process_interval}ms)"
             self.canvas.create_text( 
-                20, 150, 
+                20, 175, 
                 text=mode_status, 
                 fill='yellow', 
                 font=('Arial', 10, 'bold'), 
@@ -1265,11 +1407,13 @@ class TransparentFaceRecognizer:
             person_folders = []
             data_faces_path = "data/data_faces_from_camera/"
             if os.path.exists(data_faces_path):
-                person_folders = [f for f in os.listdir(data_faces_path) if f.startswith("person_")]
+                # 只获取真实身份的文件夹，过滤掉unknown临时文件夹
+                person_folders = [f for f in os.listdir(data_faces_path) 
+                                if f.startswith("person_") and not f.startswith("person_unknown")]
             
             if not person_folders:
-                print("没有找到任何人脸图像文件夹")
-                logging.warning("没有找到任何人脸图像文件夹")
+                print("没有找到任何真实身份的人脸图像文件夹")
+                logging.warning("没有找到任何真实身份的人脸图像文件夹")
                 return False
             
             # 创建新的CSV文件
@@ -1457,12 +1601,22 @@ def main():
         # 创建主实例
         recognizer = TransparentFaceRecognizer()
         
-        # 启动时重做CSV文件，显示进度条
-        print("正在重新生成人脸特征文件...")
-        logging.info("开始重新生成人脸特征文件...")
-        
-        # 显示启动进度条
-        recognizer.show_loading_progress("正在初始化人脸库...", lambda: recognizer.regenerate_csv_from_images())
+        # 检查是否需要重新生成CSV文件（首次启动或CSV文件不存在）
+        csv_path = "data/features_all.csv"
+        if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+            # 首次启动或CSV文件为空，重新生成
+            print("首次启动，正在重新生成人脸特征文件...")
+            logging.info("首次启动，开始重新生成人脸特征文件...")
+            
+            # 显示启动进度条
+            recognizer.show_loading_progress("正在初始化人脸库...", lambda: recognizer.regenerate_csv_from_images())
+        else:
+            # CSV文件存在，直接加载
+            print("检测到现有特征文件，正在加载...")
+            logging.info("检测到现有特征文件，正在加载...")
+            
+            # 显示加载进度条
+            recognizer.show_loading_progress("正在加载人脸库...", lambda: recognizer.get_face_database())
         
         print("启动人脸识别监控系统...")
         logging.info("开始运行人脸识别监控系统")
