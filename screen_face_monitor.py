@@ -164,6 +164,10 @@ class TransparentFaceRecognizer:
         self.auto_add_new_faces = False  # 是否自动识别添加新面孔 - 默认关闭
         self.processed_features = set()  # 已处理的特征集合
         
+        # 重点人员弹窗冷却时间管理
+        self.popup_cooldown = 30  # 重点人员弹窗冷却时间(秒)
+        self.last_popup_time = {}  # 记录每个人最后弹窗时间 {name: timestamp}
+        
         # API相关配置
         self.api_enabled = REQUESTS_AVAILABLE  # 是否启用API调用
         self.api_url = "http://localhost:5000/api/recognize_face"  # API地址
@@ -258,6 +262,11 @@ class TransparentFaceRecognizer:
             self.adjust_interval
         )
         
+        self.cooldown_item = pystray.MenuItem(
+            lambda item: f"弹窗冷却: {self.popup_cooldown}秒",
+            self.adjust_popup_cooldown
+        )
+        
         # 删除API调用相关菜单项
         # self.toggle_api_item = pystray.MenuItem(
         #     lambda item: f"{'关闭' if self.api_enabled else '开启'}API调用",
@@ -270,11 +279,13 @@ class TransparentFaceRecognizer:
             self.threshold_item,
             self.toggle_status_item,
             self.interval_item,
+            self.cooldown_item,
             # self.toggle_api_item,  # 删除API调用菜单项
             pystray.MenuItem('手动添加人脸', self.manual_add_face),
             pystray.MenuItem('人脸库管理器', self.open_faces_folder),
             pystray.MenuItem('重点关注人员管理', self.manage_important_persons),
             pystray.MenuItem('清理所有临时身份', self.clear_all_temp_identities),
+            #pystray.MenuItem('重置弹窗状态', self.reset_popup_status),
             pystray.MenuItem('清空数据库', self.clear_database),
             pystray.MenuItem('退出', self.quit_program) 
         )
@@ -1207,6 +1218,29 @@ class TransparentFaceRecognizer:
         self.shown_faces.add(name)
  
         def show():
+            # --- 弹窗时保存屏幕截图 ---
+            try:
+                # 获取当前屏幕图像
+                screenshot = self.get_screen()
+                # 构造保存路径
+                import datetime
+                safe_name = name.replace('/', '_').replace('\\', '_')
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                screenshot_dir = 'data/data_faces_from_camera'
+                if not os.path.exists(screenshot_dir):
+                    os.makedirs(screenshot_dir)
+                screenshot_path = os.path.join(
+                    screenshot_dir,
+                    f'screenshot_重点人员_{safe_name}_{timestamp}.png'
+                )
+                # 保存为PNG
+                import cv2
+                cv2.imwrite(screenshot_path, cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR))
+                logging.info(f"已保存重点关注人员截图: {screenshot_path}")
+            except Exception as e:
+                logging.error(f"保存重点关注人员截图失败: {e}")
+            # --- 截图保存结束 ---
+            
             popup = Toplevel(self.root) 
             popup.title(f"⚠️ 重点关注人员: {name}")
             popup.attributes("-topmost", True)
@@ -1256,8 +1290,9 @@ class TransparentFaceRecognizer:
             def close():
                 """关闭弹窗并清理状态"""
                 try:
-                    self.shown_faces.discard(name) 
-                    logging.debug(f"已从shown_faces中移除: {name}")
+                    # 只从shown_faces中移除，保留冷却时间记录
+                    self.shown_faces.discard(name)
+                    logging.debug(f"已从shown_faces中移除: {name}，冷却时间记录保留")
                 except Exception as e:
                     logging.warning(f"从shown_faces移除时出错: {e}")
                 
@@ -1580,7 +1615,7 @@ class TransparentFaceRecognizer:
         """绘制状态信息"""
         # 创建半透明背景
         bg_width = 310
-        bg_height = 210  # 增加高度以容纳API状态
+        bg_height = 235  # 增加高度以容纳新的状态行
         self.canvas.create_rectangle(
             10, 10, 10 + bg_width, 10 + bg_height,
             fill='black', outline='white', width=2, stipple='gray50'
@@ -1621,10 +1656,22 @@ class TransparentFaceRecognizer:
             anchor='nw'
         )
         
+        # 显示弹窗冷却时间
+        cooldown_status = f"弹窗冷却: {self.popup_cooldown}秒"
+        if self.last_popup_time:
+            cooldown_status += f" | 已记录: {len(self.last_popup_time)}人"
+        self.canvas.create_text( 
+            20, 100, 
+            text=cooldown_status, 
+            fill='purple', 
+            font=('Arial', 11, 'bold'), 
+            anchor='nw'
+        )
+        
         # 显示自动发现新面孔状态
         auto_add_status = "自动发现新面孔: 开启" if self.auto_add_new_faces else "自动发现新面孔: 关闭"
         self.canvas.create_text( 
-            20, 100, 
+            20, 125, 
             text=auto_add_status, 
             fill='cyan', 
             font=('Arial', 11, 'bold'), 
@@ -1637,7 +1684,7 @@ class TransparentFaceRecognizer:
             api_status += f" | 临时面孔: {len(self.temp_faces)}"
         api_color = 'green' if self.api_enabled else 'red'
         self.canvas.create_text( 
-            20, 125, 
+            20, 150, 
             text=api_status, 
             fill=api_color, 
             font=('Arial', 11, 'bold'), 
@@ -1647,7 +1694,7 @@ class TransparentFaceRecognizer:
         # 显示当前识别阈值
         threshold_status = f"识别阈值: {self.recognition_threshold:.2f}"
         self.canvas.create_text( 
-            20, 150, 
+            20, 175, 
             text=threshold_status, 
             fill='magenta', 
             font=('Arial', 11, 'bold'), 
@@ -1657,7 +1704,7 @@ class TransparentFaceRecognizer:
         # 显示运行模式
         mode_status = f"运行模式: {'GPU加速' if gpu_available else 'CPU优化'} (间隔:{self.process_interval}ms)"
         self.canvas.create_text( 
-            20, 175, 
+            20, 200, 
             text=mode_status, 
             fill='yellow', 
             font=('Arial', 10, 'bold'), 
@@ -1983,35 +2030,46 @@ class TransparentFaceRecognizer:
             logging.debug(f"跳过临时身份弹窗显示: {name}")
             return
         
+        current_time = time.time()
+        
+        # 检查冷却时间 - 如果该人员在冷却期内，跳过弹窗
+        if name in self.last_popup_time:
+            time_since_last_popup = current_time - self.last_popup_time[name]
+            if time_since_last_popup < self.popup_cooldown:
+                logging.debug(f"重点人员 {name} 在冷却期内 ({time_since_last_popup:.1f}s < {self.popup_cooldown}s)，跳过弹窗")
+                return
+        
         if not self.show_popup or name in self.shown_faces: 
             return 
         
-        self.shown_faces.add(name) 
-
-        # --- 新增：弹窗时保存屏幕截图 ---
-        try:
-            # 获取当前屏幕图像
-            screenshot = self.get_screen()
-            # 构造保存路径
-            import datetime
-            safe_name = name.replace('/', '_').replace('\\', '_')
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            screenshot_dir = 'data/data_faces_from_camera'
-            if not os.path.exists(screenshot_dir):
-                os.makedirs(screenshot_dir)
-            screenshot_path = os.path.join(
-                screenshot_dir,
-                f'screenshot_重点人员_{safe_name}_{timestamp}.png'
-            )
-            # 保存为PNG
-            import cv2
-            cv2.imwrite(screenshot_path, cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR))
-            logging.info(f"已保存重点关注人员截图: {screenshot_path}")
-        except Exception as e:
-            logging.error(f"保存重点关注人员截图失败: {e}")
-        # --- 新增结束 ---
+        # 记录弹窗时间
+        self.last_popup_time[name] = current_time
+        self.shown_faces.add(name)
 
         def show():
+            # --- 弹窗时保存屏幕截图 ---
+            try:
+                # 获取当前屏幕图像
+                screenshot = self.get_screen()
+                # 构造保存路径
+                import datetime
+                safe_name = name.replace('/', '_').replace('\\', '_')
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                screenshot_dir = 'data/data_faces_from_camera'
+                if not os.path.exists(screenshot_dir):
+                    os.makedirs(screenshot_dir)
+                screenshot_path = os.path.join(
+                    screenshot_dir,
+                    f'screenshot_重点人员_{safe_name}_{timestamp}.png'
+                )
+                # 保存为PNG
+                import cv2
+                cv2.imwrite(screenshot_path, cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR))
+                logging.info(f"已保存重点关注人员截图: {screenshot_path}")
+            except Exception as e:
+                logging.error(f"保存重点关注人员截图失败: {e}")
+            # --- 截图保存结束 ---
+            
             popup = Toplevel(self.root) 
             popup.title(f"⚠️ 重点关注人员: {name}")
             popup.attributes("-topmost", True)
@@ -2028,7 +2086,7 @@ class TransparentFaceRecognizer:
                     tk_img = ImageTk.PhotoImage(pil_img)
                     label_img = Label(popup, image=tk_img)
                     label_img.image = tk_img  # type: ignore
-                    label_img.pack(pady=10)
+                    label_img.pack(pady=10) 
                 except Exception as e:
                     Label(popup, text=f"图片加载失败: {str(e)}").pack(pady=10)
             else:
@@ -2061,8 +2119,9 @@ class TransparentFaceRecognizer:
             def close():
                 """关闭弹窗并清理状态"""
                 try:
+                    # 只从shown_faces中移除，保留冷却时间记录
                     self.shown_faces.discard(name)
-                    logging.debug(f"已从shown_faces中移除: {name}")
+                    logging.debug(f"已从shown_faces中移除: {name}，冷却时间记录保留")
                 except Exception as e:
                     logging.warning(f"从shown_faces移除时出错: {e}")
                 
@@ -2081,20 +2140,87 @@ class TransparentFaceRecognizer:
         threading.Thread(target=show).start()
 
     def reset_popup_status(self, icon=None, item=None):
-        """重置弹窗状态，清空已弹窗人员列表"""
+        """重置弹窗状态，清空已弹窗人员列表和冷却时间记录"""
         try:
-            count = len(self.shown_faces)
+            shown_count = len(self.shown_faces)
+            cooldown_count = len(self.last_popup_time)
             self.shown_faces.clear()
-            logging.info(f"已重置弹窗状态，清空了 {count} 个已弹窗人员记录")
+            self.last_popup_time.clear()
+            logging.info(f"已重置弹窗状态，清空了 {shown_count} 个已弹窗人员记录和 {cooldown_count} 个冷却时间记录")
             
             # 显示确认消息
             import tkinter.messagebox as messagebox
-            messagebox.showinfo("重置完成", f"已重置弹窗状态\n清空了 {count} 个已弹窗人员记录\n重点关注人员将可以重新弹窗")
+            messagebox.showinfo("重置完成", f"已重置弹窗状态\n清空了 {shown_count} 个已弹窗人员记录\n清空了 {cooldown_count} 个冷却时间记录\n重点关注人员将可以重新弹窗")
             
         except Exception as e:
             logging.error(f"重置弹窗状态时出错: {str(e)}")
             import tkinter.messagebox as messagebox
             messagebox.showerror("错误", f"重置弹窗状态失败: {str(e)}")
+
+    def adjust_popup_cooldown(self, icon=None, item=None):
+        """调整重点人员弹窗冷却时间"""
+        def show_cooldown_dialog():
+            dialog = Toplevel(self.root)
+            dialog.title("调整弹窗冷却时间")
+            dialog.geometry("400x300")
+            dialog.attributes("-topmost", True)
+            dialog.grab_set()
+            
+            # 说明文字
+            info_text = """弹窗冷却时间说明：\n• 冷却时间内同一人员不会重复弹窗\n• 时间越短，弹窗越频繁\n• 时间越长，减少重复弹窗\n• 当前冷却时间：{}秒""".format(self.popup_cooldown)
+            
+            Label(dialog, text=info_text, font=('Arial', 10), justify='left').pack(pady=10)
+            
+            # 预设按钮
+            preset_frame = tk.Frame(dialog)
+            preset_frame.pack(pady=10)
+            
+            def set_preset_cooldown(value):
+                self.popup_cooldown = value
+                logging.info(f"弹窗冷却时间已设置为: {value}秒")
+                # 更新菜单显示
+                if hasattr(self, 'tray_icon') and self.tray_icon:
+                    self.tray_icon.update_menu()
+                # 更新对话框中的当前时间显示
+                current_cooldown_label.config(text=f"当前冷却时间：{value}秒")
+                # 同步输入框
+                cooldown_entry_var.set(str(value))
+            
+            # 预设冷却时间按钮
+            tk.Button(preset_frame, text="10秒 (频繁)", command=lambda: set_preset_cooldown(10)).pack(side=tk.LEFT, padx=5)
+            tk.Button(preset_frame, text="30秒 (标准)", command=lambda: set_preset_cooldown(30)).pack(side=tk.LEFT, padx=5)
+            tk.Button(preset_frame, text="60秒 (较少)", command=lambda: set_preset_cooldown(60)).pack(side=tk.LEFT, padx=5)
+            tk.Button(preset_frame, text="300秒 (很少)", command=lambda: set_preset_cooldown(300)).pack(side=tk.LEFT, padx=5)
+            
+            # 当前冷却时间显示
+            current_cooldown_label = Label(dialog, text=f"当前冷却时间：{self.popup_cooldown}秒", 
+                                         font=('Arial', 12, 'bold'), fg='blue')
+            current_cooldown_label.pack(pady=10)
+
+            # 手动输入精细冷却时间
+            input_frame = tk.Frame(dialog)
+            input_frame.pack(pady=10)
+            Label(input_frame, text="手动输入时间(秒):", font=('Arial', 10)).pack(side=tk.LEFT)
+            cooldown_entry_var = tk.StringVar()
+            cooldown_entry_var.set(str(self.popup_cooldown))
+            cooldown_entry = tk.Entry(input_frame, textvariable=cooldown_entry_var, width=8, font=('Arial', 12))
+            cooldown_entry.pack(side=tk.LEFT, padx=5)
+            
+            def set_custom_cooldown():
+                try:
+                    value = int(cooldown_entry_var.get())
+                    if 5 <= value <= 3600:  # 5秒到1小时
+                        set_preset_cooldown(value)
+                    else:
+                        messagebox.showwarning("时间范围错误", "请输入5~3600秒之间的数值！")
+                except Exception:
+                    messagebox.showwarning("输入错误", "请输入有效的数字！")
+            tk.Button(input_frame, text="设置", command=set_custom_cooldown, width=8).pack(side=tk.LEFT, padx=5)
+            
+            # 关闭按钮
+            tk.Button(dialog, text="关闭", command=dialog.destroy, width=10).pack(pady=10)
+        
+        self.root.after(0, show_cooldown_dialog)
 
 def detect_gpu_availability():
     """检测GPU可用性"""
