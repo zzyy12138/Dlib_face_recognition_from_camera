@@ -89,9 +89,9 @@ class DailyLogManager:
 log_manager = DailyLogManager()
  
 # 加载Dlib预训练模型 
-cnn_face_detector = dlib.cnn_face_detection_model_v1('data/data_dlib/mmod_human_face_detector.dat') 
-predictor = dlib.shape_predictor('data/data_dlib/shape_predictor_68_face_landmarks.dat') 
-face_reco_model = dlib.face_recognition_model_v1("data/data_dlib/dlib_face_recognition_resnet_model_v1.dat") 
+cnn_face_detector = dlib.cnn_face_detection_model_v1('data/data_dlib/mmod_human_face_detector.dat')  # type: ignore
+predictor = dlib.shape_predictor('data/data_dlib/shape_predictor_68_face_landmarks.dat')  # type: ignore
+face_reco_model = dlib.face_recognition_model_v1("data/data_dlib/dlib_face_recognition_resnet_model_v1.dat")  # type: ignore
  
 class TransparentFaceRecognizer:
     def __init__(self):
@@ -134,7 +134,7 @@ class TransparentFaceRecognizer:
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
         # 识别阈值设置
-        self.recognition_threshold = 0.5  # 默认识别阈值
+        self.recognition_threshold = 0.48  # 默认识别阈值
         
         # 根据GPU可用性自动调整设置
         if gpu_available:
@@ -175,6 +175,9 @@ class TransparentFaceRecognizer:
         # 清理计时器
         self.last_cleanup_time = time.time()
         self.cleanup_interval = 3600  # 每小时清理一次临时文件
+        
+        # 进度条状态
+        self.progress_active = False
         
         # 初始化 
         self.set_window_clickthrough() 
@@ -266,6 +269,8 @@ class TransparentFaceRecognizer:
             pystray.MenuItem('人脸库管理器', self.open_faces_folder),
             pystray.MenuItem('重点关注人员管理', self.manage_important_persons),
             pystray.MenuItem('清理所有临时身份', self.clear_all_temp_identities),
+            pystray.MenuItem('重置弹窗状态', self.reset_popup_status),
+            pystray.MenuItem('调试数据库', self.debug_database),
             pystray.MenuItem('清空数据库', self.clear_database),
             pystray.MenuItem('退出', self.quit_program) 
         )
@@ -411,7 +416,7 @@ class TransparentFaceRecognizer:
             success, buffer = cv2.imencode('.jpg', img_rgb)
             if success:
                 # 转换为base64
-                img_base64 = base64.b64encode(buffer).decode('utf-8')
+                img_base64 = base64.b64encode(buffer.tobytes()).decode('utf-8')
                 return img_base64
             else:
                 logging.error("图像编码失败")
@@ -1092,7 +1097,7 @@ class TransparentFaceRecognizer:
         img = cv2.cvtColor(img,  cv2.COLOR_BGRA2RGB)
         return img 
  
-    def show_face_info(self, name, idx):
+    def show_face_info(self, name, person_id, person_name, real_name):
         """显示已知人脸信息（仅重点关注人员）"""
         # 过滤掉临时身份，不显示unknown1、unknown2等临时身份的弹窗
         if name.startswith('unknown') or name.startswith('TEMP'):
@@ -1103,10 +1108,9 @@ class TransparentFaceRecognizer:
         try:
             # 从数据库获取人员信息
             person_info = None
-            if idx < len(self.face_name_known_list):
-                # 通过完整的人员名称查找人员信息
-                person_name = self.face_name_known_list[idx]
-                
+            if person_id:
+                person_info = self.db_manager.get_person_by_id(person_id)
+            elif person_name:
                 # 解析姓名和身份证号
                 if '_' in person_name and person_name.count('_') >= 1:
                     name_parts = person_name.split('_', 1)
@@ -1129,7 +1133,7 @@ class TransparentFaceRecognizer:
         if not self.show_popup or name in self.shown_faces: 
             return 
             
-        self.shown_faces.add(name) 
+        self.shown_faces.add(name)
  
         def show():
             popup = Toplevel(self.root) 
@@ -1137,7 +1141,9 @@ class TransparentFaceRecognizer:
             popup.attributes("-topmost", True)
             
             # 从数据库获取图像数据
-            image_data = self.face_image_data_list[idx] if idx < len(self.face_image_data_list) else None
+            image_data = None
+            if person_id:
+                image_data = self.db_manager.get_face_image(person_id)
             
             if image_data: 
                 try:
@@ -1145,7 +1151,7 @@ class TransparentFaceRecognizer:
                     pil_img = Image.open(io.BytesIO(image_data)).resize((200, 200))
                     tk_img = ImageTk.PhotoImage(pil_img)
                     label_img = Label(popup, image=tk_img)
-                    label_img.image = tk_img 
+                    label_img.image = tk_img  # type: ignore
                     label_img.pack(pady=10) 
                 except Exception as e:
                     Label(popup, text=f"图片加载失败: {str(e)}").pack(pady=10)
@@ -1160,8 +1166,8 @@ class TransparentFaceRecognizer:
                 id_number = name_parts[1]
                 
                 # 如果有真实姓名，优先显示真实姓名
-                if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
-                    display_name = self.real_name_known_list[idx]
+                if real_name:
+                    display_name = real_name
                 
                 info = f"⚠️ 重点关注人员\n姓名: {display_name}\n身份证号: {id_number}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
             else:
@@ -1169,8 +1175,8 @@ class TransparentFaceRecognizer:
                 display_name = name
                 
                 # 如果有真实姓名，优先显示真实姓名
-                if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
-                    display_name = self.real_name_known_list[idx]
+                if real_name:
+                    display_name = real_name
                 
                 info = f"⚠️ 重点关注人员\n姓名: {display_name}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
                 
@@ -1339,7 +1345,7 @@ class TransparentFaceRecognizer:
         
         for face in faces:
             rect = face.rect  
-            rect = dlib.rectangle( 
+            rect = dlib.rectangle(  # type: ignore
                 int(rect.left()  / scale), 
                 int(rect.top()  / scale),
                 int(rect.right()  / scale), 
@@ -1366,15 +1372,17 @@ class TransparentFaceRecognizer:
                 # 记录识别结果
                 # logging.info(f"识别到已知人脸: {name} (距离: {distance:.3f})")
                 
-                # 在内存列表中找到对应的索引（使用person_name查找，因为内存中存储的是person_name）
-                if person_name in self.face_name_known_list:
-                    idx = self.face_name_known_list.index(person_name)
-                    if name not in self.shown_faces and self.show_popup: 
-                        # 如果是重点关注人员，显示特殊弹窗
-                        if is_important:
-                            self.root.after(100, lambda n=name, i=idx, p_id=person_id: self.show_important_person_popup(n, i, p_id))
-                        else:
-                            self.root.after(100, lambda n=name, i=idx: self.show_face_info(n, i))
+                # 检查是否需要显示弹窗
+                if name not in self.shown_faces and self.show_popup: 
+                    # 如果是重点关注人员，显示特殊弹窗
+                    if is_important:
+                        # 直接使用数据库中的信息，不依赖内存索引
+                        self.root.after(100, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
+                                      self.show_important_person_popup(n, p_id, p_name, r_name))
+                    else:
+                        # 普通人员，使用show_face_info方法
+                        self.root.after(100, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
+                                      self.show_face_info(n, p_id, p_name, r_name))
             else:
                 # 数据库中没有找到，检查内存中的特征（包括刚刚更新的）
                 min_distance = float('inf')
@@ -1401,6 +1409,7 @@ class TransparentFaceRecognizer:
                     if name not in self.shown_faces and self.show_popup:
                         # 检查是否为重点关注人员
                         is_important = False
+                        person_id = None
                         try:
                             # 从数据库获取人员信息以检查重点关注状态
                             if '_' in person_name:
@@ -1408,23 +1417,18 @@ class TransparentFaceRecognizer:
                                 person_info = self.db_manager.get_person_by_name_id(name_parts[0], name_parts[1])
                                 if person_info:
                                     is_important = person_info.get('is_important', False)
+                                    person_id = person_info['id']
                         except:
                             pass
                         
                         if is_important:
-                            # 获取person_id用于重点关注弹窗
-                            person_id = None
-                            try:
-                                if '_' in person_name:
-                                    name_parts = person_name.split('_', 1)
-                                    person_info = self.db_manager.get_person_by_name_id(name_parts[0], name_parts[1])
-                                    if person_info:
-                                        person_id = person_info['id']
-                            except:
-                                pass
-                            self.root.after(100, lambda n=name, i=best_match_idx, p_id=person_id: self.show_important_person_popup(n, i, p_id))
+                            # 重点关注人员弹窗
+                            self.root.after(100, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
+                                          self.show_important_person_popup(n, p_id, p_name, r_name))
                         else:
-                            self.root.after(100, lambda n=name, i=best_match_idx: self.show_face_info(n, i))
+                            # 普通人员弹窗
+                            self.root.after(100, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
+                                          self.show_face_info(n, p_id, p_name, r_name))
                 else:
                     # 未找到匹配的人脸，标记为未知
                     name = "Unknown"
@@ -1666,7 +1670,7 @@ class TransparentFaceRecognizer:
                                         # 如果缩小后检测到，将坐标放大回原始尺寸
                                         for face in faces:
                                             rect = face.rect
-                                            face.rect = dlib.rectangle(
+                                            face.rect = dlib.rectangle(  # type: ignore
                                                 int(rect.left() * 2),
                                                 int(rect.top() * 2),
                                                 int(rect.right() * 2),
@@ -1681,7 +1685,7 @@ class TransparentFaceRecognizer:
                                         # 如果放大后检测到，将坐标缩小回原始尺寸
                                         for face in faces:
                                             rect = face.rect
-                                            face.rect = dlib.rectangle(
+                                            face.rect = dlib.rectangle(  # type: ignore
                                                 int(rect.left() / 2),
                                                 int(rect.top() / 2),
                                                 int(rect.right() / 2),
@@ -1883,25 +1887,50 @@ class TransparentFaceRecognizer:
 
         threading.Thread(target=run_clear_database_tool, daemon=True).start()
 
-    def show_important_person_popup(self, name, idx, person_id):
-        """显示重点关注人员信息弹窗"""
+    def show_important_person_popup(self, name, person_id, person_name, real_name):
+        """显示重点关注人员信息弹窗，并保存当前屏幕截图"""
         # 过滤掉临时身份，不显示unknown1、unknown2等临时身份的弹窗
         if name.startswith('unknown') or name.startswith('TEMP'):
             logging.debug(f"跳过临时身份弹窗显示: {name}")
             return
-            
+        
         if not self.show_popup or name in self.shown_faces: 
             return 
-            
+        
         self.shown_faces.add(name) 
- 
+
+        # --- 新增：弹窗时保存屏幕截图 ---
+        try:
+            # 获取当前屏幕图像
+            screenshot = self.get_screen()
+            # 构造保存路径
+            import datetime
+            safe_name = name.replace('/', '_').replace('\\', '_')
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            screenshot_dir = 'data/data_faces_from_camera'
+            if not os.path.exists(screenshot_dir):
+                os.makedirs(screenshot_dir)
+            screenshot_path = os.path.join(
+                screenshot_dir,
+                f'screenshot_重点人员_{safe_name}_{timestamp}.png'
+            )
+            # 保存为PNG
+            import cv2
+            cv2.imwrite(screenshot_path, cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR))
+            logging.info(f"已保存重点关注人员截图: {screenshot_path}")
+        except Exception as e:
+            logging.error(f"保存重点关注人员截图失败: {e}")
+        # --- 新增结束 ---
+
         def show():
             popup = Toplevel(self.root) 
             popup.title(f"⚠️ 重点关注人员: {name}")
             popup.attributes("-topmost", True)
             
             # 从数据库获取图像数据
-            image_data = self.face_image_data_list[idx] if idx < len(self.face_image_data_list) else None
+            image_data = None
+            if person_id:
+                image_data = self.db_manager.get_face_image(person_id)
             
             if image_data: 
                 try:
@@ -1909,8 +1938,8 @@ class TransparentFaceRecognizer:
                     pil_img = Image.open(io.BytesIO(image_data)).resize((200, 200))
                     tk_img = ImageTk.PhotoImage(pil_img)
                     label_img = Label(popup, image=tk_img)
-                    label_img.image = tk_img 
-                    label_img.pack(pady=10) 
+                    label_img.image = tk_img  # type: ignore
+                    label_img.pack(pady=10)
                 except Exception as e:
                     Label(popup, text=f"图片加载失败: {str(e)}").pack(pady=10)
             else:
@@ -1924,8 +1953,8 @@ class TransparentFaceRecognizer:
                 id_number = name_parts[1]
                 
                 # 如果有真实姓名，优先显示真实姓名
-                if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
-                    display_name = self.real_name_known_list[idx]
+                if real_name:
+                    display_name = real_name
                 
                 info = f"⚠️ 重点关注人员\n姓名: {display_name}\n身份证号: {id_number}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
             else:
@@ -1933,8 +1962,8 @@ class TransparentFaceRecognizer:
                 display_name = name
                 
                 # 如果有真实姓名，优先显示真实姓名
-                if idx < len(self.real_name_known_list) and self.real_name_known_list[idx]:
-                    display_name = self.real_name_known_list[idx]
+                if real_name:
+                    display_name = real_name
                 
                 info = f"⚠️ 重点关注人员\n姓名: {display_name}\n识别时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
                 
@@ -1982,10 +2011,10 @@ def detect_gpu_availability():
     """检测GPU可用性"""
     try:
         # 检查dlib是否支持CUDA
-        if hasattr(dlib, 'DLIB_USE_CUDA') and dlib.DLIB_USE_CUDA:
+        if hasattr(dlib, 'DLIB_USE_CUDA') and dlib.DLIB_USE_CUDA:  # type: ignore
             # 检查CUDA设备数量
-            if hasattr(dlib, 'cuda') and hasattr(dlib.cuda, 'get_num_devices'):
-                num_devices = dlib.cuda.get_num_devices()
+            if hasattr(dlib, 'cuda') and hasattr(dlib.cuda, 'get_num_devices'):  # type: ignore
+                num_devices = dlib.cuda.get_num_devices()  # type: ignore
                 if num_devices > 0:
                     logging.info(f"检测到 {num_devices} 个CUDA设备，启用GPU加速")
                     return True, num_devices
