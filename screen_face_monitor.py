@@ -140,13 +140,13 @@ class TransparentFaceRecognizer:
         if gpu_available:
             # GPU模式 - 高性能设置
             self.cpu_optimization = False
-            self.process_interval = 50  # 更快的处理间隔
+            self.process_interval = 30  # 更快的处理间隔 (从50ms减少到30ms)
             self.image_scale = 0.5  # 更高的图像质量
             logging.info("使用GPU模式，启用高性能设置")
         else:
             # CPU模式 - 优化设置
             self.cpu_optimization = True
-            self.process_interval = 100  # 较慢的处理间隔
+            self.process_interval = 60  # 更快的处理间隔 (从100ms减少到60ms)
             self.image_scale = 0.3  # 更小的图像以节省CPU
             logging.info("使用CPU模式，启用优化设置")
         
@@ -253,6 +253,11 @@ class TransparentFaceRecognizer:
             self.toggle_status_display
         )
         
+        self.interval_item = pystray.MenuItem(
+            lambda item: f"处理间隔: {self.process_interval}ms",
+            self.adjust_interval
+        )
+        
         # 删除API调用相关菜单项
         # self.toggle_api_item = pystray.MenuItem(
         #     lambda item: f"{'关闭' if self.api_enabled else '开启'}API调用",
@@ -264,13 +269,12 @@ class TransparentFaceRecognizer:
             self.toggle_auto_add_item,
             self.threshold_item,
             self.toggle_status_item,
+            self.interval_item,
             # self.toggle_api_item,  # 删除API调用菜单项
             pystray.MenuItem('手动添加人脸', self.manual_add_face),
             pystray.MenuItem('人脸库管理器', self.open_faces_folder),
             pystray.MenuItem('重点关注人员管理', self.manage_important_persons),
             pystray.MenuItem('清理所有临时身份', self.clear_all_temp_identities),
-            pystray.MenuItem('重置弹窗状态', self.reset_popup_status),
-            pystray.MenuItem('调试数据库', self.debug_database),
             pystray.MenuItem('清空数据库', self.clear_database),
             pystray.MenuItem('退出', self.quit_program) 
         )
@@ -376,12 +380,79 @@ class TransparentFaceRecognizer:
         self.root.after(0, show_threshold_dialog)
  
     def toggle_status_display(self, icon=None, item=None):
-        """切换状态显示开关"""
+        """切换状态显示"""
         self.show_status_display = not self.show_status_display
         if icon:
             icon.update_menu()
-        logging.info(f" 状态显示已 {'开启' if self.show_status_display else '关闭'}")
- 
+        logging.info(f"状态显示已 {'开启' if self.show_status_display else '关闭'}")
+    
+    def adjust_interval(self, icon=None, item=None):
+        """调整处理间隔"""
+        def show_interval_dialog():
+            dialog = Toplevel(self.root)
+            dialog.title("调整处理间隔")
+            dialog.geometry("400x300")
+            dialog.attributes("-topmost", True)
+            dialog.grab_set()
+            
+            # 说明文字
+            info_text = """处理间隔说明：\n• 间隔越小，响应越快，但CPU占用越高\n• 间隔越大，响应越慢，但CPU占用越低\n• 推荐范围：20ms - 100ms\n• 当前间隔：{}ms""".format(self.process_interval)
+            
+            Label(dialog, text=info_text, font=('Arial', 10), justify='left').pack(pady=10)
+            
+            # 预设按钮
+            preset_frame = tk.Frame(dialog)
+            preset_frame.pack(pady=10)
+            
+            def set_preset_interval(value):
+                self.process_interval = value
+                logging.info(f"处理间隔已设置为: {value}ms")
+                # 更新菜单显示
+                if hasattr(self, 'tray_icon') and self.tray_icon:
+                    self.tray_icon.update_menu()
+                # 更新对话框中的当前间隔显示
+                current_interval_label.config(text=f"当前间隔：{value}ms")
+                # 同步输入框
+                interval_entry.delete(0, tk.END)
+                interval_entry.insert(0, str(value))
+            
+            # 预设间隔按钮
+            tk.Button(preset_frame, text="20ms (极快)", command=lambda: set_preset_interval(20)).pack(side=tk.LEFT, padx=5)
+            tk.Button(preset_frame, text="30ms (快速)", command=lambda: set_preset_interval(30)).pack(side=tk.LEFT, padx=5)
+            tk.Button(preset_frame, text="50ms (标准)", command=lambda: set_preset_interval(50)).pack(side=tk.LEFT, padx=5)
+            tk.Button(preset_frame, text="100ms (慢速)", command=lambda: set_preset_interval(100)).pack(side=tk.LEFT, padx=5)
+            
+            # 自定义间隔输入
+            custom_frame = tk.Frame(dialog)
+            custom_frame.pack(pady=10)
+            
+            tk.Label(custom_frame, text="自定义间隔(ms):").pack(side=tk.LEFT)
+            interval_entry = tk.Entry(custom_frame, width=10)
+            interval_entry.pack(side=tk.LEFT, padx=5)
+            interval_entry.insert(0, str(self.process_interval))
+            
+            def set_custom_interval():
+                try:
+                    value = int(interval_entry.get())
+                    if 10 <= value <= 200:
+                        set_preset_interval(value)
+                    else:
+                        messagebox.showerror("错误", "间隔值必须在10-200ms之间")
+                except ValueError:
+                    messagebox.showerror("错误", "请输入有效的数字")
+            
+            tk.Button(custom_frame, text="设置", command=set_custom_interval).pack(side=tk.LEFT, padx=5)
+            
+            # 当前间隔显示
+            current_interval_label = tk.Label(dialog, text=f"当前间隔：{self.process_interval}ms", font=('Arial', 12, 'bold'))
+            current_interval_label.pack(pady=10)
+            
+            # 关闭按钮
+            tk.Button(dialog, text="关闭", command=dialog.destroy).pack(pady=10)
+        
+        # 在主线程中显示对话框
+        self.root.after(0, show_interval_dialog)
+    
     def toggle_api_enabled(self, icon=None, item=None):
         """切换API调用状态"""
         self.api_enabled = not self.api_enabled
@@ -1324,7 +1395,10 @@ class TransparentFaceRecognizer:
             self.root.after(self.process_interval, self.process_frame)
             return
         
+        # 立即清空画布 - 确保框选立即消失
         self.canvas.delete("all") 
+        
+        # 获取屏幕截图
         img = self.get_screen() 
         scale = self.image_scale if self.cpu_optimization else 0.5
         img_small = cv2.resize(img,  (0, 0), fx=scale, fy=scale)
@@ -1341,8 +1415,16 @@ class TransparentFaceRecognizer:
         self.current_frame_face_position_list.clear() 
         self.current_frame_face_name_list.clear() 
         self.current_frame_face_known_list.clear() 
-        self.current_frame_face_cnt  = len(faces)
+        self.current_frame_face_cnt = len(faces)
         
+        # 如果没有检测到人脸，直接绘制结果并返回
+        if len(faces) == 0:
+            self.draw_results() 
+            self.update_fps() 
+            self.root.after(self.process_interval, self.process_frame)
+            return
+        
+        # 批量处理所有人脸，减少循环开销
         for face in faces:
             rect = face.rect  
             rect = dlib.rectangle(  # type: ignore
@@ -1352,6 +1434,7 @@ class TransparentFaceRecognizer:
                 int(rect.bottom()  / scale)
             )
             
+            # 快速特征提取
             shape = predictor(img, rect)
             feature = face_reco_model.compute_face_descriptor(img, shape)
             name = "Unknown"
@@ -1369,25 +1452,20 @@ class TransparentFaceRecognizer:
                 name = display_name
                 known = True
                 
-                # 记录识别结果
-                # logging.info(f"识别到已知人脸: {name} (距离: {distance:.3f})")
-                
-                # 检查是否需要显示弹窗
+                # 检查是否需要显示弹窗 - 使用延迟执行避免阻塞主线程
                 if name not in self.shown_faces and self.show_popup: 
-                    # 如果是重点关注人员，显示特殊弹窗
                     if is_important:
-                        # 直接使用数据库中的信息，不依赖内存索引
-                        self.root.after(100, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
+                        self.root.after(50, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
                                       self.show_important_person_popup(n, p_id, p_name, r_name))
                     else:
-                        # 普通人员，使用show_face_info方法
-                        self.root.after(100, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
+                        self.root.after(50, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
                                       self.show_face_info(n, p_id, p_name, r_name))
             else:
-                # 数据库中没有找到，检查内存中的特征（包括刚刚更新的）
+                # 数据库中没有找到，检查内存中的特征
                 min_distance = float('inf')
                 best_match_idx = -1
                 
+                # 优化内存特征搜索
                 for i, stored_feature in enumerate(self.face_feature_known_list):
                     distance = self.return_euclidean_distance(feature, stored_feature)
                     if distance < min_distance and distance < self.recognition_threshold:
@@ -1403,8 +1481,6 @@ class TransparentFaceRecognizer:
                     display_name = real_name if real_name else person_name
                     name = display_name
                     known = True
-                    
-                    #logging.info(f"在内存中识别到人脸: {name} (距离: {min_distance:.3f})")
                     
                     if name not in self.shown_faces and self.show_popup:
                         # 检查是否为重点关注人员
@@ -1423,11 +1499,11 @@ class TransparentFaceRecognizer:
                         
                         if is_important:
                             # 重点关注人员弹窗
-                            self.root.after(100, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
+                            self.root.after(50, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
                                           self.show_important_person_popup(n, p_id, p_name, r_name))
                         else:
                             # 普通人员弹窗
-                            self.root.after(100, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
+                            self.root.after(50, lambda n=name, p_id=person_id, p_name=person_name, r_name=real_name: 
                                           self.show_face_info(n, p_id, p_name, r_name))
                 else:
                     # 未找到匹配的人脸，标记为未知
@@ -1443,17 +1519,25 @@ class TransparentFaceRecognizer:
             self.current_frame_face_name_list.append(name) 
             self.current_frame_face_known_list.append(known)
             
-        # 绘制结果 
+        # 立即绘制结果 
         self.draw_results() 
         self.update_fps() 
-        self.root.after(self.process_interval,  self.process_frame)
+        self.root.after(self.process_interval, self.process_frame)
  
     def draw_results(self):
         """在画布上绘制检测结果"""
-        # 绘制人脸框和名称 
+        # 如果没有检测到人脸，只绘制状态信息
+        if len(self.current_frame_face_position_list) == 0:
+            if self.show_status_display:
+                self.draw_status_info()
+            return
+        
+        # 批量绘制所有人脸框和名称 - 减少画布操作次数
         for i, (left, top, right, bottom) in enumerate(self.current_frame_face_position_list): 
-            color = 'red' if self.current_frame_face_known_list[i]  else 'cyan'
-            self.canvas.create_rectangle(left,  top, right, bottom, outline=color, width=2)
+            color = 'red' if self.current_frame_face_known_list[i] else 'cyan'
+            
+            # 使用更粗的线条提高可见性
+            self.canvas.create_rectangle(left, top, right, bottom, outline=color, width=3)
             
             # 解析显示名称
             display_name = self.current_frame_face_name_list[i]
@@ -1479,6 +1563,7 @@ class TransparentFaceRecognizer:
             # 设置文本颜色
             text_color = 'lime' if self.current_frame_face_known_list[i] else 'yellow'
             
+            # 绘制名称文本
             self.canvas.create_text( 
                 left, bottom + 20, 
                 text=display_name, 
@@ -1487,93 +1572,97 @@ class TransparentFaceRecognizer:
                 anchor='nw'
             )
         
-        # 只在开启状态显示时绘制状态信息
+        # 绘制状态信息
         if self.show_status_display:
-            # 创建半透明背景
-            bg_width = 310
-            bg_height = 210  # 增加高度以容纳API状态
-            self.canvas.create_rectangle(
-                10, 10, 10 + bg_width, 10 + bg_height,
-                fill='black', outline='white', width=2, stipple='gray50'
-            )
-            
-            # 显示统计信息 
-            info = f"检测到人脸: {self.current_frame_face_cnt}  | FPS: {self.fps_show:.1f}" 
-            self.canvas.create_text( 
-                20, 25, 
-                text=info, 
-                fill='lime', 
-                font=('Arial', 12, 'bold'), 
-                anchor='nw'
-            )
-            
-            # 显示GPU状态
-            gpu_status = f"GPU: {'可用' if gpu_available else '不可用'}"
-            if gpu_available:
-                gpu_status += f" ({gpu_count}个设备)"
-            gpu_color = 'green' if gpu_available else 'red'
-            self.canvas.create_text( 
-                20, 50, 
-                text=gpu_status, 
-                fill=gpu_color, 
-                font=('Arial', 11, 'bold'), 
-                anchor='nw'
-            )
-            
-            # 显示弹窗状态
-            popup_status = "弹窗显示: 开启" if self.show_popup else "弹窗显示: 关闭"
-            if self.is_processing_new_face or self.new_face_popup_window is not None:
-                popup_status += " | 新面孔处理中"
-            self.canvas.create_text( 
-                20, 75, 
-                text=popup_status, 
-                fill='orange', 
-                font=('Arial', 11, 'bold'), 
-                anchor='nw'
-            )
-            
-            # 显示自动发现新面孔状态
-            auto_add_status = "自动发现新面孔: 开启" if self.auto_add_new_faces else "自动发现新面孔: 关闭"
-            self.canvas.create_text( 
-                20, 100, 
-                text=auto_add_status, 
-                fill='cyan', 
-                font=('Arial', 11, 'bold'), 
-                anchor='nw'
-            )
-            
-            # 显示API状态
-            api_status = "API调用: 开启" if self.api_enabled else "API调用: 关闭"
-            if self.temp_faces:
-                api_status += f" | 临时面孔: {len(self.temp_faces)}"
-            api_color = 'green' if self.api_enabled else 'red'
-            self.canvas.create_text( 
-                20, 125, 
-                text=api_status, 
-                fill=api_color, 
-                font=('Arial', 11, 'bold'), 
-                anchor='nw'
-            )
-            
-            # 显示当前识别阈值
-            threshold_status = f"识别阈值: {self.recognition_threshold:.2f}"
-            self.canvas.create_text( 
-                20, 150, 
-                text=threshold_status, 
-                fill='magenta', 
-                font=('Arial', 11, 'bold'), 
-                anchor='nw'
-            )
-            
-            # 显示运行模式
-            mode_status = f"运行模式: {'GPU加速' if gpu_available else 'CPU优化'} (间隔:{self.process_interval}ms)"
-            self.canvas.create_text( 
-                20, 175, 
-                text=mode_status, 
-                fill='yellow', 
-                font=('Arial', 10, 'bold'), 
-                anchor='nw'
-            )
+            self.draw_status_info()
+    
+    def draw_status_info(self):
+        """绘制状态信息"""
+        # 创建半透明背景
+        bg_width = 310
+        bg_height = 210  # 增加高度以容纳API状态
+        self.canvas.create_rectangle(
+            10, 10, 10 + bg_width, 10 + bg_height,
+            fill='black', outline='white', width=2, stipple='gray50'
+        )
+        
+        # 显示统计信息 
+        info = f"检测到人脸: {self.current_frame_face_cnt}  | FPS: {self.fps_show:.1f}" 
+        self.canvas.create_text( 
+            20, 25, 
+            text=info, 
+            fill='lime', 
+            font=('Arial', 12, 'bold'), 
+            anchor='nw'
+        )
+        
+        # 显示GPU状态
+        gpu_status = f"GPU: {'可用' if gpu_available else '不可用'}"
+        if gpu_available:
+            gpu_status += f" ({gpu_count}个设备)"
+        gpu_color = 'green' if gpu_available else 'red'
+        self.canvas.create_text( 
+            20, 50, 
+            text=gpu_status, 
+            fill=gpu_color, 
+            font=('Arial', 11, 'bold'), 
+            anchor='nw'
+        )
+        
+        # 显示弹窗状态
+        popup_status = "弹窗显示: 开启" if self.show_popup else "弹窗显示: 关闭"
+        if self.is_processing_new_face or self.new_face_popup_window is not None:
+            popup_status += " | 新面孔处理中"
+        self.canvas.create_text( 
+            20, 75, 
+            text=popup_status, 
+            fill='orange', 
+            font=('Arial', 11, 'bold'), 
+            anchor='nw'
+        )
+        
+        # 显示自动发现新面孔状态
+        auto_add_status = "自动发现新面孔: 开启" if self.auto_add_new_faces else "自动发现新面孔: 关闭"
+        self.canvas.create_text( 
+            20, 100, 
+            text=auto_add_status, 
+            fill='cyan', 
+            font=('Arial', 11, 'bold'), 
+            anchor='nw'
+        )
+        
+        # 显示API状态
+        api_status = "API调用: 开启" if self.api_enabled else "API调用: 关闭"
+        if self.temp_faces:
+            api_status += f" | 临时面孔: {len(self.temp_faces)}"
+        api_color = 'green' if self.api_enabled else 'red'
+        self.canvas.create_text( 
+            20, 125, 
+            text=api_status, 
+            fill=api_color, 
+            font=('Arial', 11, 'bold'), 
+            anchor='nw'
+        )
+        
+        # 显示当前识别阈值
+        threshold_status = f"识别阈值: {self.recognition_threshold:.2f}"
+        self.canvas.create_text( 
+            20, 150, 
+            text=threshold_status, 
+            fill='magenta', 
+            font=('Arial', 11, 'bold'), 
+            anchor='nw'
+        )
+        
+        # 显示运行模式
+        mode_status = f"运行模式: {'GPU加速' if gpu_available else 'CPU优化'} (间隔:{self.process_interval}ms)"
+        self.canvas.create_text( 
+            20, 175, 
+            text=mode_status, 
+            fill='yellow', 
+            font=('Arial', 10, 'bold'), 
+            anchor='nw'
+        )
  
     def run(self):
         """运行主循环"""
