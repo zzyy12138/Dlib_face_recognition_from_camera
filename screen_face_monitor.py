@@ -1400,9 +1400,9 @@ class TransparentFaceRecognizer:
                     if success:
                         logging.info(f"成功更新 {temp_name} 为真实身份: {api_result['name']} - {api_result['id_card']}")
                         
-                        # 显示更新通知
-                        if self.show_popup:
-                            self.show_api_update_notification(temp_name, api_result['name'], api_result['id_card'])
+                        # 显示更新通知 - 已注释掉，不再显示"身份信息已更新"弹窗
+                        # if self.show_popup:
+                        #     self.show_api_update_notification(temp_name, api_result['name'], api_result['id_card'])
                     else:
                         logging.error(f"更新 {temp_name} 身份信息失败")
                 else:
