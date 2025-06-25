@@ -155,7 +155,7 @@ class TransparentFaceRecognizer:
         
         # 新面孔管理 - 增强弹窗控制
         self.last_new_face_time = 0 
-        self.new_face_cooldown = 5  # 新面孔检测冷却时间(秒)
+        self.new_face_cooldown = 2  # 新面孔检测冷却时间(秒)
         self.current_new_face = None  # 当前正在处理的新面孔 
         self.is_processing_new_face = False  # 是否正在处理新面孔 
         self.new_face_popup_window = None  # 当前新面孔弹窗窗口对象
