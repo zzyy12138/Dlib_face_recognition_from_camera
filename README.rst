@@ -1,273 +1,239 @@
-Face recognition from camera with Dlib
-######################################
+Dlib 人脸识别监控系统
+========================
 
-Introduction
-************
+项目简介
+--------
+本项目是一个基于 Dlib、OpenCV、Tkinter、SQLite 的屏幕人脸识别监控系统，支持 GPU 加速，具备弹窗提醒、系统托盘控制、API 联动、数据库管理等功能。适用于重点人员监控、身份核查、访客管理等场景。
 
-调用摄像头进行人脸识别, 支持多张人脸同时识别 / Detect and recognize single or multi faces from camera;
+主要功能
+--------
+- 屏幕实时人脸检测与识别：自动捕获屏幕内容，检测并识别所有出现的人脸。
+- GPU/CPU 自动切换：自动检测 GPU 环境，优先使用 GPU 加速。
+- 透明窗口覆盖：识别窗口可全屏透明显示，不影响用户正常操作。
+- 系统托盘菜单：一键切换弹窗、自动发现、识别阈值、状态显示等功能。
+- 重点关注人员弹窗提醒：识别到重点关注人员时自动弹窗并截图留存。
+- 新面孔自动发现与身份升级：自动检测新面孔，调用 API 获取真实身份并升级数据库。
+- SQLite 数据库存储：所有人脸、特征、图片、身份信息均持久化存储。
+- 人脸库管理、手动采集、数据库清理等工具：便于维护和扩展。
+- 详细日志记录：所有操作、异常、识别结果均有日志记录。
 
-#. Tkinter 人脸录入界面, 支持录入时设置 (中文) 姓名 / Face register GUI with Tkinter, support setting (chinese) name when registering
-
-   .. image:: introduction/face_register_tkinter_GUI.png
-      :width: 1000
-      :align: center
-
-#. 简单的 OpenCV 摄像头人脸录入界面 / Simple face register GUI with OpenCV, tkinter not needed and cannot set name
-
-   .. image:: introduction/face_register.png
-      :width: 1000
-      :align: center
-
-   离摄像头过近, 人脸超出摄像头范围时, 会有 "OUT OF RANGE" 提醒 /
-   Too close to the camera, or face ROI out of camera area, will have "OUT OF RANGE" warning;
-
-   .. image:: introduction/face_register_warning.png
-      :width: 1000
-      :align: center
-
-#. 提取特征建立人脸数据库 / Generate face database from images captured
-#. 利用摄像头进行人脸识别 / Face recognizer
-   
-   face_reco_from_camera.py, 对于每一帧都做检测识别 / Do detection and recognition for every frame:
-   
-   .. image:: introduction/face_reco.png
-      :width: 1000
-      :align: center
-
-   face_reco_from_camera_single_face.py, 对于人脸<=1, 只有新人脸出现才进行再识别来提高 FPS /
-   Do re-reco only for new single face:
-
-   .. image:: introduction/face_reco_single.png
-      :width: 1000
-      :align: center
-
-   face_reco_from_camera_ot.py, 利用 OT 来实现再识别提高 FPS / Use OT to instead of re-reco for every frame to improve FPS:
-
-   .. image:: introduction/face_reco_ot.png
-      :width: 1000
-      :align: center
-
-   定制显示名字, 可以写中文 / Show chinese name:
-
-   .. image:: introduction/face_reco_chinese_name.png
-      :width: 1000
-      :align: center
-
-
-** 关于精度 / About accuracy:
-
-* When using a distance threshold of ``0.6``, the dlib model obtains an accuracy of ``99.38%`` on the standard LFW face recognition benchmark.
-
-** 关于算法 / About algorithm
-
-* 基于 Residual Neural Network / 残差网络的 CNN 模型;
-
-* This model is a ResNet network with 29 conv layers.
-It's essentially a version of the ResNet-34 network from the paper Deep Residual Learning for Image Recognition
-by He, Zhang, Ren, and Sun with a few layers removed and the number of filters per layer reduced by half.
-
-Overview
-********
-
-此项目中人脸识别的实现流程 (no OT, 每一帧都进行检测+识别) / 
-Design of this repo, do detection and recognization for every frame:
-
-.. image:: introduction/overview.png
-   :width: 1000
-   :align: center
-
-实现流程 (with OT, 初始帧进行检测+识别, 后续帧检测+质心跟踪) / OT used:
-
-.. image:: introduction/overview_with_ot.png
-   :width: 1000
-   :align: center
-
-如果利用 OT 来跟踪, 可以大大提高 FPS, 因为做识别时候需要提取特征描述子的耗时很多 / 
-Use OT can save the time for face descriptor computation to improve FPS;
-
-Steps
-*****
-
-#. 下载源码 / Git clone source code
-
-   .. code-block:: bash
-
-      git clone https://github.com/coneypo/Dlib_face_recognition_from_camera
-
-#. 安装依赖库 / Install some python packages needed
-
-   .. code-block:: bash
-
-      pip install -r requirements.txt
-
-#. 进行人脸信息采集录入, Tkinter GUI / Register faces with Tkinter GUI
-
-   .. code-block:: bash
-
-      # Install Tkinter
-      sudo apt-get install python3-tk python3-pil python3-pil.imagetk
-
-      python3 get_faces_from_camera_tkinter.py
-
-#. 进行人脸信息采集录入, OpenCV GUI / Register faces with OpenCV GUI, same with above step
-
-   .. code-block:: bash
-
-      python3 get_face_from_camera.py
-
-#. 提取所有录入人脸数据存入 ``features_all.csv`` / Features extraction and save into ``features_all.csv``
-
-   .. code-block:: bash
-
-      python3 features_extraction_to_csv.py
-
-#. 调用摄像头进行实时人脸识别 / Real-time face recognition
-
-   .. code-block:: bash
-
-      python3 face_reco_from_camera.py
-
-#. 对于人脸数<=1, 调用摄像头进行实时人脸识别 / Real-time face recognition (Better FPS compared with ``face_reco_from_camera.py``)
-
-   .. code-block:: bash
-
-      python3 face_reco_from_camera_single_face.py
-
-#. 利用 OT 算法, 调用摄像头进行实时人脸识别 / Real-time face recognition with OT (Better FPS)
-
-   .. code-block:: bash
-
-      python3 face_reco_from_camera_ot.py
-
-About Source Code
-*****************
-
-代码结构 / Code structure:
-
+项目结构
+--------
 ::
 
-    .
-    ├── get_faces_from_camera.py        		# Step 1. Face register GUI with OpenCV
-    ├── get_faces_from_camera_tkinter.py                # Step 1. Face register GUI with Tkinter
-    ├── features_extraction_to_csv.py   		# Step 2. Feature extraction
-    ├── face_reco_from_camera.py        		# Step 3. Face recognizer
-    ├── face_reco_from_camera_single_face.py            # Step 3. Face recognizer for single person
-    ├── face_reco_from_camera_ot.py                     # Step 3. Face recognizer with OT
-    ├── face_descriptor_from_camera.py  		# Face descriptor computation
-    ├── how_to_use_camera.py            		# Use the default camera by opencv
-    ├── data
-    │   ├── data_dlib        			        # Dlib's model
-    │   │   ├── dlib_face_recognition_resnet_model_v1.dat
-    │   │   └── shape_predictor_68_face_landmarks.dat
-    │   ├── data_faces_from_camera                      # Face images captured from camera (will generate after step 1)
-    │   │   ├── person_1
-    │   │   │   ├── img_face_1.jpg
-    │   │   │   └── img_face_2.jpg
-    │   │   └── person_2
-    │   │       └── img_face_1.jpg
-    │   │       └── img_face_2.jpg
-    │   └── features_all.csv            	        # CSV to save all the features of known faces (will generate after step 2)
-    ├── README.rst
-    └── requirements.txt                		# Some python packages needed
+    Dlib_face_recognition_from_camera/
+    │
+    ├── screen_face_monitor.py         # 主程序（监控+识别+UI+托盘）
+    ├── face_database_manager.py       # 数据库管理器（核心数据操作）
+    ├── face_library_manager.py        # 人脸库管理工具（可视化管理）
+    ├── face_collector_from_image.py   # 手动采集人脸工具
+    ├── important_person_manager.py    # 重点关注人员管理工具
+    ├── clear_database_tool.py         # 数据库清空工具
+    ├── view_logs.py                   # 日志查看工具
+    ├── face_recognition_api.py        # 人脸识别API服务
+    ├── start_system.py                # 系统启动脚本
+    ├── simsun.ttc                     # 中文字体文件
+    ├── requirements.txt               # 依赖包列表
+    ├── README.rst                     # 项目说明（本文件）
+    ├── LICENSE                        # 开源许可证
+    │
+    ├── data/
+    │   ├── data_dlib/                 # Dlib 模型文件
+    │   │   ├── dlib_face_recognition_resnet_model_v1.dat
+    │   │   ├── mmod_human_face_detector.dat
+    │   │   └── shape_predictor_68_face_landmarks.dat
+    │   ├── data_faces_from_camera/    # 采集的人脸图片/截图
+    │   └── face_database.db           # 主数据库
+    │
+    ├── demo/                          # 演示和测试脚本
+    │   ├── demo.py                    # 基础演示
+    │   ├── check_gpu.py               # GPU检测工具
+    │   ├── add_real_face.py           # 添加真实人脸
+    │   ├── cleanup_temp_identities.py # 清理临时身份
+    │   ├── features_extraction_to_csv.py # 特征提取到CSV
+    │   ├── face_reco_from_camera.py   # 摄像头人脸识别
+    │   ├── face_reco_from_camera_single_face.py # 单脸识别
+    │   ├── face_reco_from_camera_ot.py # 实时跟踪识别
+    │   ├── get_faces_from_camera.py   # 摄像头人脸采集
+    │   ├── get_faces_from_camera_tkinter.py # GUI人脸采集
+    │   ├── face_descriptor_from_camera.py # 人脸特征提取
+    │   └── how_to_use_camera.py       # 摄像头使用说明
+    │
+    └── logs/                          # 日志文件
+        ├── face_library_manager.log   # 人脸库管理日志
+        └── face_monitor_YYYYMMDD.log  # 监控系统日志
 
-用到的 Dlib 相关模型函数 / Dlib related functions used in this repo:
+核心组件说明
+-----------
+### 1. screen_face_monitor.py - 主程序
+**功能**：屏幕人脸识别监控的核心程序
+- **实现方法**：
+  - 使用 mss 库实时捕获屏幕画面
+  - 基于 Dlib CNN 人脸检测器检测人脸
+  - 使用 ResNet 模型提取 128 维人脸特征向量
+  - 透明 Tkinter 窗口显示识别结果
+  - 系统托盘菜单控制各项功能
+  - 支持 GPU/CPU 自动切换优化性能
+  - 新面孔自动发现与 API 身份升级
+  - 重点关注人员弹窗提醒与截图
 
-#. Dlib 正向人脸检测器 (based on HOG), output: ``<class 'dlib.dlib.rectangles'>`` / Dlib frontal face detector
+### 2. face_database_manager.py - 数据库管理器
+**功能**：SQLite 数据库的核心操作管理
+- **实现方法**：
+  - 线程安全的数据库操作（使用锁机制）
+  - 四表结构：persons（人员信息）、face_images（人脸图片）、face_features（特征向量）、recognition_logs（识别记录）
+  - 支持临时身份与真实身份管理
+  - 人脸特征向量相似度计算与匹配
+  - 重点关注人员标记与管理
+  - 数据库备份、导入导出功能
+  - 自动清理过期临时身份
 
+### 3. face_library_manager.py - 人脸库管理工具
+**功能**：可视化的人脸库管理界面
+- **实现方法**：
+  - Tkinter GUI 界面，左右分栏布局
+  - 左侧显示人员列表（Treeview 组件）
+  - 右侧显示详细信息和人脸图片预览
+  - 支持按身份证号去重显示
+  - 实时统计各类人员数量
+  - 支持删除、设置重点关注、导出数据等操作
+  - 图片数据从数据库二进制字段读取显示
 
-   .. code-block:: python
+### 4. face_collector_from_image.py - 人脸采集工具
+**功能**：从图片中批量采集人脸并入库
+- **实现方法**：
+  - 支持选择单张或多张图片
+  - 自动检测图片中的所有人脸
+  - 可视化人脸选择界面
+  - 支持批量保存不同人员的人脸
+  - 智能处理文件路径和二进制数据
+  - 实时预览已注册人员信息
+  - 支持删除已注册人员
 
-      detector = dlib.get_frontal_face_detector()
-      faces = detector(img_gray, 0)
+### 5. important_person_manager.py - 重点关注人员管理
+**功能**：管理重点关注人员列表
+- **实现方法**：
+  - 简洁的 Tkinter 界面
+  - 显示所有重点关注人员信息
+  - 支持按身份证号批量取消重点关注
+  - 按创建时间排序显示
+  - 实时刷新数据
 
-#. Dlib 人脸 landmark 特征点检测器, output: ``<class 'dlib.dlib.full_object_detection'>`` / Dlib face landmark predictor, will use ``shape_predictor_68_face_landmarks.dat``
+### 6. face_recognition_api.py - 人脸识别API服务
+**功能**：模拟第三方人脸识别API服务
+- **实现方法**：
+  - Flask Web 服务，支持跨域请求
+  - 接收 base64 编码的人脸图片
+  - 模拟识别延迟和成功率
+  - 随机生成中文姓名和身份证号
+  - 返回标准化的 JSON 响应格式
+  - 健康检查接口
 
-   .. code-block:: python
+### 7. 其他工具脚本
+- **clear_database_tool.py**：一键清空数据库
+- **view_logs.py**：日志查看工具
+- **start_system.py**：系统启动脚本
+- **demo/**：各种演示和测试脚本
 
-      # This is trained on the ibug 300-W dataset (https://ibug.doc.ic.ac.uk/resources/facial-point-annotations/)
-      # Also note that this model file is designed for use with dlib's HOG face detector.
-      # That is, it expects the bounding boxes from the face detector to be aligned a certain way,
-      the way dlib's HOG face detector does it.
-      # It won't work as well when used with a face detector that produces differently aligned boxes,
-      # such as the CNN based mmod_human_face_detector.dat face detector.
+依赖环境
+--------
+- Python 3.10+
+- dlib==20.0.0 (CUDA 11.8支持)
+- opencv-python==4.11.0.86
+- numpy==2.2.6
+- pandas==2.3.0
+- pillow==11.2.1
+- pyautogui==0.9.54
+- mss==10.0.0
+- pystray==0.19.5
+- requests==2.32.4
+- flask==3.1.1, flask-cors==6.0.1（如需API联动）
+- pywin32==310（Windows系统）
+- sqlite3（Python自带）
+- tkinter（Python自带）
 
-      predictor = dlib.shape_predictor("data/data_dlib/shape_predictor_68_face_landmarks.dat")
-      shape = predictor(img_rd, faces[i])
+安装依赖::
 
-	  
-#. Dlib 特征描述子 / Face recognition model, the object maps human faces into 128D vectors
+    # 方法1：使用pip安装（基于requirements.txt）
+    pip install -r requirements.txt
+    
+    # 方法2：使用conda安装dlib（推荐）
+    conda install -c conda-forge dlib=20.0.0
+    pip install -r requirements.txt
+    
+    # 方法3：完整conda环境安装
+    conda create -n face_recognition python=3.10
+    conda activate face_recognition
+    conda install -c conda-forge dlib=20.0.0
+    pip install opencv-python==4.11.0.86 numpy==2.2.6 pandas==2.3.0 pillow==11.2.1 pyautogui==0.9.54 mss==10.0.0 pystray==0.19.5 requests==2.32.4 flask==3.1.1 flask-cors==6.0.1 pywin32==310
 
+**注意**：
+- 推荐使用conda安装dlib，因为conda会自动处理dlib的依赖关系，避免编译问题
+- 当前环境使用CUDA 11.8版本的dlib，支持GPU加速
+- 如果使用pip安装dlib遇到编译错误，请尝试conda方式
+- 完整的环境配置可参考 `requirements_conda.txt` 和 `requirements_pip.txt`
 
-   .. code-block:: python
+快速开始
+--------
+1. 准备 Dlib 模型文件
+   确保 ``data/data_dlib/`` 下有如下 3 个模型文件（如缺失请自行下载）：
+   - dlib_face_recognition_resnet_model_v1.dat
+   - mmod_human_face_detector.dat
+   - shape_predictor_68_face_landmarks.dat
 
-      face_rec = dlib.face_recognition_model_v1("data/data_dlib/dlib_face_recognition_resnet_model_v1.dat")
+2. 运行主程序::
 
+    python screen_face_monitor.py
 
-Python 源码介绍如下 / Source code:
+3. 系统托盘菜单操作
+   - 右下角托盘图标可一键切换弹窗、自动发现、阈值、状态显示等
+   - 支持手动添加人脸、管理人脸库、清理临时身份、清空数据库等
 
-#. ``get_face_from_camera.py``: 
+4. 数据库/人脸库管理
+   - ``face_library_manager.py``：可视化管理人脸库
+   - ``important_person_manager.py``：管理重点关注人员
+   - ``clear_database_tool.py``：一键清空数据库
 
-   人脸信息采集录入 / Face register with OpenCV GUI
+5. 演示和测试
+   - ``demo/check_gpu.py``：检测GPU环境
+   - ``demo/face_reco_from_camera.py``：摄像头人脸识别演示
+   - ``demo/get_faces_from_camera.py``：摄像头人脸采集演示
 
-   * 请注意存储人脸图片时, 矩形框不要超出摄像头范围, 要不然无法保存到本地;
-   * 超出会有 "out of range" 的提醒;
+数据存储说明
+------------
+- 数据库：所有身份、特征、图片、重点关注、临时/真实身份等均存储于 ``data/face_database.db``
+- 内存缓存：加速识别与弹窗，定期与数据库同步
+- 图片文件：采集图片、弹窗截图等保存在 ``data/data_faces_from_camera/``
+- 日志：``logs/face_monitor_YYYYMMDD.log`` 记录所有操作与异常
 
+常见问题
+--------
+1. 模型文件缺失/损坏
+   请重新下载 Dlib 官方模型，放入 ``data/data_dlib/``。
 
-#. ``get_faces_from_camera_tkinter.py``:
+2. 依赖缺失/安装失败
+   检查 Python 版本，优先使用官方源安装，必要时使用清华/阿里镜像。
 
-   进行人脸信息采集录入 Tkinter GUI / Face register with Tkinter GUI
+3. API 联动不可用
+   检查 ``requests`` 是否安装，API 服务是否启动，地址端口是否正确。
 
-#. ``features_extraction_to_csv.py``:
-     
-   从上一步存下来的图像文件中, 提取人脸数据存入 CSV / Extract features from face images saved in step 1;
-  
-   * 会生成一个存储所有特征人脸数据的 ``features_all.csv``
-   * Size: ``n*129`` , n means n faces you registered and 129 means face name + 128D features of this face
+4. 数据库异常/损坏
+   可用 ``clear_database_tool.py`` 清空数据库，或手动恢复备份。
 
-#. ``face_reco_from_camera.py``: 
+5. 界面乱码/字体问题
+   确保 ``simsun.ttc`` 字体文件存在于项目根目录。
 
-   这一步将调用摄像头进行实时人脸识别; / This part will implement real-time face recognition;
-   
-   * 将捕获到的人脸数据和之前存的人脸数据进行对比计算欧式距离, 由此判断是否是同一个人;
-  
-   * Compare the faces captured from camera with the faces you have registered which are saved in ``features_all.csv``;
+6. GPU不可用
+   检查 dlib 是否为 CUDA 版本，显卡驱动与 CUDA 环境是否配置正确。
 
-#. ``face_reco_from_camera_single_face.py``:
-	
-   针对于人脸数 <=1 的场景, 区别于 ``face_reco_from_camera.py`` (对每一帧都进行检测+识别), 只有人脸出现的时候进行识别;
+进阶与扩展
+----------
+- 支持多摄像头/多屏幕扩展
+- API 联动可对接第三方身份库
+- 可自定义弹窗样式、识别阈值、重点关注规则
+- 支持更多数据库（如 MySQL、PostgreSQL）
+- 日志与数据可远程同步/备份
 
-#. ``face_reco_from_camera_ot.py``:
-
-   只会对初始帧做检测+识别, 对后续帧做检测+质心跟踪;
-
-#. (optional) ``face_descriptor_from_camera.py``
-
-   调用摄像头进行实时特征描述子计算; / Real-time face descriptor computation;
-
-More
-****
-
-#. 如果希望详细了解 dlib 的用法, 请参考 Dlib 官方 Python api 的网站 / You can refer to this link for more information of how to use dlib: http://dlib.net/python/index.html
-
-#. Modify log level to ``logging.basicConfig(level=logging.DEBUG)`` to print info for every frame if needed (Default is ``logging.INFO``)
-
-#. 代码最好不要有中文路径 / No chinese characters in your code directory
-
-#. 人脸录入的时候先建文件夹再保存图片, 先 ``N`` 再 ``S`` / Press ``N`` before ``S``
-
-#. 关于 ``face_reco_from_camera.py`` 人脸识别卡顿 FPS 低问题, 原因是特征描述子提取很费时间; 光跑 ``face_descriptor_from_camera.py`` 中 ``face_reco_model.compute_face_descriptor`` 在我的机器上得到的平均 FPS 在 5 左右 (检测在 ``0.03s`` , 特征描述子提取在 ``0.158s`` , 和已知人脸进行遍历对比在 ``0.003s`` 左右); 所以主要提取特征时候耗资源, 可以用 OT 去做追踪 (使用 ``face_reco_from_camera_ot.py`` ), 而不是对每一帧都做检测+识别, 识别的性能从 20 FPS -> 200 FPS
-
-可以访问我的博客获取本项目的更详细介绍, 如有问题可以邮件联系我 /
-For more details, please visit my blog (in chinese) or send mail to coneypo@foxmail.com:
-
-* Blog: https://www.cnblogs.com/AdaminXie/p/9010298.html
-
-* 关于 OT 部分的更新在 Blog: https://www.cnblogs.com/AdaminXie/p/13566269.html
-
-* Feel free to create issue or contribute PR for it:)
-
-Thanks for your support.
-
-
-
-使用conda装dlib
+联系方式
+--------
+如有问题或建议，请联系项目维护者，或在 issue 区留言。 
